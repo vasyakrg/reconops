@@ -59,23 +59,71 @@ func Bootstrap(caDir string, dnsNames []string, ipAddrs []net.IP) (*Material, er
 		}
 	}
 
+	// Regenerate the server cert on every start when the SAN list in
+	// hub.yaml differs from the cert on disk. Without this, editing
+	// dns_names / ip_addrs after first boot is silent — agents keep
+	// hitting "x509: certificate is valid for X, not Y" forever. The CA
+	// stays put (regenerating would invalidate every enrolled agent's
+	// trust); we only re-issue the cheap server leaf.
 	srvExists := fileExists(filepath.Join(caDir, serverCertFile)) && fileExists(filepath.Join(caDir, serverKeyFile))
+	regen := !srvExists
 	if srvExists {
-		cert, err := os.ReadFile(filepath.Join(caDir, serverCertFile))
-		if err != nil {
-			return nil, err
+		match, err := serverCertCovers(filepath.Join(caDir, serverCertFile), dnsNames, ipAddrs)
+		if err != nil || !match {
+			regen = true
 		}
-		key, err := os.ReadFile(filepath.Join(caDir, serverKeyFile))
-		if err != nil {
-			return nil, err
-		}
-		mat.ServerCert, mat.ServerKey = cert, key
-	} else {
+	}
+	if regen {
 		if err := mat.generateServerCert(caDir, dnsNames, ipAddrs); err != nil {
 			return nil, fmt.Errorf("generate server cert: %w", err)
 		}
 	}
+	cert, err := os.ReadFile(filepath.Join(caDir, serverCertFile))
+	if err != nil {
+		return nil, err
+	}
+	key, err := os.ReadFile(filepath.Join(caDir, serverKeyFile))
+	if err != nil {
+		return nil, err
+	}
+	mat.ServerCert, mat.ServerKey = cert, key
 	return mat, nil
+}
+
+// serverCertCovers reports whether the server cert at path advertises every
+// dns_name + ip_addr the operator configured. Used to decide whether to
+// re-issue the leaf when hub.yaml SANs change.
+func serverCertCovers(path string, dnsNames []string, ipAddrs []net.IP) (bool, error) {
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return false, fmt.Errorf("server cert: no PEM block")
+	}
+	c, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false, err
+	}
+	have := map[string]struct{}{}
+	for _, n := range c.DNSNames {
+		have[n] = struct{}{}
+	}
+	for _, ip := range c.IPAddresses {
+		have[ip.String()] = struct{}{}
+	}
+	for _, n := range dnsNames {
+		if _, ok := have[n]; !ok {
+			return false, nil
+		}
+	}
+	for _, ip := range ipAddrs {
+		if _, ok := have[ip.String()]; !ok {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func fileExists(p string) bool {
