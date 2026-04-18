@@ -373,7 +373,9 @@ func handleCollectBatch(ctx context.Context, env HandlerEnv, argsJSON string) To
 }
 
 func handleGetFullResult(ctx context.Context, env HandlerEnv, argsJSON string) ToolResult {
-	var a struct{ TaskID string }
+	var a struct {
+		TaskID string `json:"task_id"`
+	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return errResult(err)
 	}
@@ -513,7 +515,9 @@ func handleSearchArtifact(ctx context.Context, env HandlerEnv, argsJSON string) 
 }
 
 func handleCompareAcrossHosts(ctx context.Context, env HandlerEnv, argsJSON string) ToolResult {
-	var a struct{ TaskIDs []string }
+	var a struct {
+		TaskIDs []string `json:"task_ids"`
+	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return errResult(err)
 	}

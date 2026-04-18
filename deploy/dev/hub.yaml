@@ -1,8 +1,8 @@
 server:
-  grpc_addr: "127.0.0.1:9443"
+  grpc_addr: "0.0.0.0:9443"
   http_addr: "127.0.0.1:8080"
   dns_names: ["localhost"]
-  ip_addrs: ["127.0.0.1"]
+  ip_addrs: ["127.0.0.1", "192.168.8.32"]
 
 storage:
   db_path: ./deploy/dev/state/recon.db
