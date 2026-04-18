@@ -1,28 +1,51 @@
 {{define "audit"}}
-<h2>Audit log</h2>
-<form method="get" action="/audit" class="inline">
-  <label class="small">actor: <input type="text" name="actor" value="{{.Actor}}" size="20"></label>
-  <label class="small">action: <input type="text" name="action" value="{{.Action}}" size="30"></label>
-  <button type="submit">filter</button>
-  <a href="/audit" class="small">reset</a>
-</form>
+<header class="pg-hd">
+  <div>
+    <div class="title">Audit</div>
+    <div class="sub mono">{{len .Entries}} entries</div>
+  </div>
+  <div class="actions">
+    <form method="get" action="/audit" style="display:flex;gap:6px;align-items:center">
+      <input type="text" name="actor" value="{{.Actor}}" placeholder="actor" style="width:120px">
+      <input type="text" name="action" value="{{.Action}}" placeholder="action" style="width:200px">
+      <button class="btn sm" type="submit">filter</button>
+      {{if or .Actor .Action}}<a class="btn sm ghost" href="/audit">reset</a>{{end}}
+    </form>
+  </div>
+</header>
+
+<div class="panel">
 {{if .Entries}}
-<table>
-  <thead><tr><th>Time (UTC)</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead>
+<table class="tbl">
+  <thead><tr>
+    <th style="width:170px">Time (UTC)</th>
+    <th style="width:140px">Actor</th>
+    <th style="width:240px">Action</th>
+    <th>Details</th>
+  </tr></thead>
   <tbody>
   {{range .Entries}}
     <tr>
-      <td class="small">{{.TS.Format "2006-01-02 15:04:05"}}</td>
-      <td><code>{{.Actor}}</code></td>
-      <td><code>{{.Action}}</code></td>
+      <td class="mono muted" style="font-size:11px" title="{{sinceUTC .TS}}">{{.TS.UTC.Format "2006-01-02 15:04:05"}}</td>
       <td>
-        {{if .Details}}<details><summary>show</summary><pre>{{.Details | mapJSON}}</pre></details>{{end}}
+        <span class="avatar" style="width:18px;height:18px;font-size:9.5px;display:inline-flex;vertical-align:middle;margin-right:6px">{{slice .Actor 0 2}}</span>
+        <span class="mono" style="color:var(--fg-1);font-size:11.5px">{{.Actor}}</span>
       </td>
+      <td>
+        {{$cls := "info"}}
+        {{if or (eq .Action "tool_call.approved") (eq .Action "agent.enrolled")}}{{$cls = "ok"}}{{end}}
+        {{if eq .Action "finding.added"}}{{$cls = "warn"}}{{end}}
+        {{if or (eq .Action "agent.offline") (eq .Action "tool_call.aborted") (eq .Action "auth.login_throttled")}}{{$cls = "err"}}{{end}}
+        {{if eq .Action "investigation.created"}}{{$cls = "accent"}}{{end}}
+        <span class="badge {{$cls}}">{{.Action}}</span>
+      </td>
+      <td>{{if .Details}}<details><summary>show</summary><pre style="margin-top:6px">{{.Details | mapJSON}}</pre></details>{{else}}<span class="dim">—</span>{{end}}</td>
     </tr>
   {{end}}
   </tbody>
 </table>
 {{else}}
-<p class="empty">No audit entries yet.</p>
+<div class="empty" style="padding:24px;text-align:center">No audit entries{{if or .Actor .Action}} matching this filter{{end}}.</div>
 {{end}}
+</div>
 {{end}}

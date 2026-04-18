@@ -1,26 +1,53 @@
 {{define "hosts"}}
-<h2>Hosts</h2>
+<header class="pg-hd">
+  <div>
+    <div class="title">Hosts</div>
+    <div class="sub mono">{{len .Hosts}} enrolled</div>
+  </div>
+  <div class="actions">
+    <a class="btn sm ghost" href="/settings#tokens">+ Bootstrap token</a>
+  </div>
+</header>
+
+<div class="panel">
 {{if .Hosts}}
-<table>
-  <thead>
-    <tr><th>ID</th><th>Status</th><th>Agent</th><th>Labels</th><th>Last seen (UTC)</th><th>First seen</th></tr>
-  </thead>
+<table class="tbl">
+  <thead><tr>
+    <th style="width:30px"></th>
+    <th>Host ID</th>
+    <th style="width:280px">Labels</th>
+    <th style="width:130px">IP</th>
+    <th style="width:140px">OS / kernel</th>
+    <th style="width:60px">CPU</th>
+    <th style="width:70px">RAM</th>
+    <th style="width:90px">Agent</th>
+    <th style="width:120px">Last seen</th>
+  </tr></thead>
   <tbody>
   {{range .Hosts}}
-    <tr>
-      <td><a href="/hosts/{{.ID}}">{{.ID}}</a></td>
-      <td class="status-{{.Status}}">{{.Status}}</td>
-      <td>{{.AgentVersion}}</td>
+    <tr onclick="location='/hosts/{{.ID}}'">
+      <td><span class="dot {{if eq .Status "online"}}ok pulse{{else if eq .Status "offline"}}offline{{else}}warn pulse{{end}}"></span></td>
+      <td class="mono" style="color:var(--fg-0);font-size:12px">{{.ID}}</td>
       <td>
-        {{range $k, $v := .Labels}}<span class="small">{{$k}}={{$v}}</span><br>{{end}}
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          {{range $k, $v := .Labels}}<span class="chip"><span class="k">{{$k}}</span><span class="muted">=</span><span class="v">{{$v}}</span></span>{{end}}
+        </div>
       </td>
-      <td>{{.LastSeenAt.Format "2006-01-02 15:04:05"}}</td>
-      <td>{{.FirstSeenAt.Format "2006-01-02 15:04:05"}}</td>
+      <td class="mono" style="color:var(--fg-1)">{{index .Facts "primary_ip"}}</td>
+      <td class="mono muted" style="font-size:11px">{{index .Facts "os"}}{{if index .Facts "arch"}} {{index .Facts "arch"}}{{end}}{{with index .Facts "kernel"}}<br><span style="font-size:10.5px">{{.}}</span>{{end}}</td>
+      <td class="mono" style="color:var(--fg-1)">{{index .Facts "cpu_count"}}</td>
+      <td class="mono" style="color:var(--fg-1)">{{with index .Facts "ram_gb"}}{{.}}G{{end}}</td>
+      <td class="mono muted" style="font-size:11px">{{.AgentVersion}}</td>
+      <td class="mono muted" style="font-size:11px" title="{{.LastSeenAt.UTC.Format "2006-01-02 15:04:05 UTC"}}">{{sinceUTC .LastSeenAt}}</td>
     </tr>
   {{end}}
   </tbody>
 </table>
 {{else}}
-<p class="empty">No agents enrolled yet. Issue a bootstrap token: <code>recon-hub gen-token</code>.</p>
+<div class="empty" style="padding:24px;text-align:center">
+  No agents enrolled yet.<br>
+  Issue a bootstrap token: <code>recon-hub --mode gen-token --agent-id &lt;id&gt;</code>
+</div>
 {{end}}
+</div>
 {{end}}

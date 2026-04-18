@@ -358,6 +358,51 @@ func (s *Store) ListFindings(ctx context.Context, investigationID string) ([]Fin
 	return out, rows.Err()
 }
 
+// FindingCounts is a per-severity tally for one investigation, used by the
+// list view to render the mini-bar (NcNwNi…).
+type FindingCounts struct {
+	Critical int
+	Error    int
+	Warn     int
+	Info     int
+}
+
+// FindingCountsByInvestigation returns severity buckets keyed by investigation
+// id. Single GROUP BY query; ignored findings are excluded so they don't
+// inflate the badge after the operator has dismissed them.
+func (s *Store) FindingCountsByInvestigation(ctx context.Context) (map[string]FindingCounts, error) {
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT investigation_id, severity, COUNT(*)
+          FROM findings
+         WHERE ignored = 0
+         GROUP BY investigation_id, severity`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]FindingCounts{}
+	for rows.Next() {
+		var inv, sev string
+		var n int
+		if err := rows.Scan(&inv, &sev, &n); err != nil {
+			return nil, err
+		}
+		c := out[inv]
+		switch sev {
+		case "critical":
+			c.Critical = n
+		case "error":
+			c.Error = n
+		case "warn":
+			c.Warn = n
+		case "info":
+			c.Info = n
+		}
+		out[inv] = c
+	}
+	return out, rows.Err()
+}
+
 // SnapshotCounters returns a small fingerprint used by SSE to decide when
 // the page should self-refresh: status, tool_call count, last tool_call
 // status, and findings count — in one query (review M8).

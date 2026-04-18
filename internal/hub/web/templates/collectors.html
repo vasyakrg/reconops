@@ -1,19 +1,37 @@
 {{define "collectors"}}
-<h2>Collector catalog</h2>
+<header class="pg-hd">
+  <div>
+    <div class="title">Collectors</div>
+    <div class="sub mono">{{len .Entries}} registered · compiled-in · read-only</div>
+  </div>
+</header>
+
 {{if .Entries}}
-<table>
-  <thead><tr><th>Collector</th><th>Version</th><th>Available on</th></tr></thead>
-  <tbody>
+<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(440px, 1fr));gap:14px">
   {{range .Entries}}
-    <tr>
-      <td><code>{{.Name}}</code></td>
-      <td>{{.Latest}}</td>
-      <td>{{range .Hosts}}<a href="/hosts/{{.}}">{{.}}</a> {{end}}</td>
-    </tr>
+  <div class="card" style="padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <span class="mono" style="font-size:13px;color:var(--fg-0);font-weight:500">{{.Name}}</span>
+      {{if .Category}}<span class="badge">{{.Category}}</span>{{end}}
+      <span class="chip" title="manifest version"><span class="k">v</span><span class="v">{{.Latest}}</span></span>
+      <span style="margin-left:auto;font-family:var(--font-mono);font-size:10.5px;color:var(--fg-2)">{{.HostCount}}/{{.TotalAgents}} agents</span>
+    </div>
+    {{if .Description}}<div style="color:var(--fg-1);font-size:12.5px;line-height:1.5;margin-bottom:10px">{{.Description}}</div>{{end}}
+    <div style="display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-family:var(--font-mono);font-size:11px;color:var(--fg-2)">
+      {{if .Reads}}<div class="dim">reads</div><div style="color:var(--fg-1)">{{range $i, $r := .Reads}}{{if $i}}<span class="dim">, </span>{{end}}{{$r}}{{end}}</div>{{end}}
+      {{if .Requires}}<div class="dim">requires</div><div style="color:var(--fg-1)">{{range $i, $r := .Requires}}{{if $i}}<span class="dim">, </span>{{end}}{{$r}}{{end}}</div>{{end}}
+      <div class="dim">on</div><div style="color:var(--fg-1)">{{range $i, $h := .Hosts}}{{if $i}}<span class="dim">, </span>{{end}}<a href="/hosts/{{$h}}">{{$h}}</a>{{end}}</div>
+    </div>
+    {{if .SchemaJSON}}
+    <details style="margin-top:10px">
+      <summary>input schema</summary>
+      <pre style="margin-top:6px">{{.SchemaJSON}}</pre>
+    </details>
+    {{end}}
+  </div>
   {{end}}
-  </tbody>
-</table>
+</div>
 {{else}}
-<p class="empty">No collectors registered (no agent has connected yet).</p>
+<div class="empty" style="padding:24px;text-align:center">No collectors registered (no agent has connected yet).</div>
 {{end}}
 {{end}}

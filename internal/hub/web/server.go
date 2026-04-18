@@ -63,6 +63,21 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 			b, _ := json.MarshalIndent(m, "", "  ")
 			return string(b)
 		},
+		"compactNum": compactNum,
+		"shortID":    shortID,
+		"sinceUTC":   sinceUTC,
+		"add":        func(a, b int) int { return a + b },
+		"div": func(a, b int) int {
+			if b == 0 {
+				return 0
+			}
+			return a / b
+		},
+		"mul":        func(a, b int) int { return a * b },
+		"pct":        pct,
+		"findCount":  findCount,
+		"barRepeat":  barRepeat,
+		"replaceAll": strings.ReplaceAll,
 	}).ParseFS(tplFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -180,9 +195,16 @@ func (s *Server) handleHostDetail(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCollectorsCatalog(w http.ResponseWriter, r *http.Request) {
 	hosts, _ := s.store.ListHosts(r.Context())
 	type entry struct {
-		Name   string
-		Hosts  []string
-		Latest string
+		Name        string
+		Hosts       []string
+		HostCount   int
+		TotalAgents int
+		Latest      string
+		Category    string
+		Description string
+		Reads       []string
+		Requires    []string
+		SchemaJSON  string
 	}
 	byName := map[string]*entry{}
 	for _, h := range hosts {
@@ -195,17 +217,53 @@ func (s *Server) handleCollectorsCatalog(w http.ResponseWriter, r *http.Request)
 			}
 			e.Hosts = append(e.Hosts, h.ID)
 			e.Latest = m.Version
+			// Pull richer metadata out of the embedded manifest JSON; keep
+			// best-effort — older agents may emit minimal manifests.
+			var raw struct {
+				Category    string         `json:"category"`
+				Description string         `json:"description"`
+				Reads       []string       `json:"reads"`
+				Requires    []string       `json:"requires"`
+				Schema      map[string]any `json:"input_schema"`
+			}
+			if err := json.Unmarshal(m.ManifestJSON, &raw); err == nil {
+				if e.Category == "" {
+					e.Category = raw.Category
+				}
+				if e.Description == "" {
+					e.Description = raw.Description
+				}
+				if len(e.Reads) == 0 {
+					e.Reads = raw.Reads
+				}
+				if len(e.Requires) == 0 {
+					e.Requires = raw.Requires
+				}
+				if e.SchemaJSON == "" && raw.Schema != nil {
+					if b, err := json.MarshalIndent(raw.Schema, "", "  "); err == nil {
+						e.SchemaJSON = string(b)
+					}
+				}
+			}
 		}
 	}
 	var entries []*entry
 	for _, e := range byName {
+		e.HostCount = len(e.Hosts)
+		e.TotalAgents = len(hosts)
 		entries = append(entries, e)
 	}
+	// Stable order: alpha by name. Inline insertion sort — list is ≤30 rows.
+	for i := 1; i < len(entries); i++ {
+		j := i
+		for j > 0 && entries[j-1].Name > entries[j].Name {
+			entries[j-1], entries[j] = entries[j], entries[j-1]
+			j--
+		}
+	}
 	s.renderForReq(w, r, "collectors", map[string]any{
-		"Title":        "Collectors",
-		"Version":      version.Version,
-		"ContentBlock": "collectors",
-		"Entries":      entries,
+		"Title":   "Collectors",
+		"Entries": entries,
 	})
 }
 
@@ -436,10 +494,17 @@ func staticHandler() http.Handler {
 
 // renderStandalone executes a complete page template by name without
 // wrapping it in the global layout/sidebar shell. Used for chrome-less
-// pages like /login.
+// pages like /login. We Clone() rather than execute the shared root
+// directly: html/template forbids Clone after ExecuteTemplate, so reusing
+// the root would break every subsequent layout-based render.
 func (s *Server) renderStandalone(w http.ResponseWriter, page string, data any) {
+	t, err := s.tpl.Clone()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tpl.ExecuteTemplate(w, page, data); err != nil {
+	if err := t.ExecuteTemplate(w, page, data); err != nil {
 		s.log.Error("render standalone", "page", page, "err", err)
 	}
 }
@@ -465,6 +530,88 @@ func (s *Server) render(w http.ResponseWriter, page string, data any) {
 	if err := t.ExecuteTemplate(w, "layout", data); err != nil {
 		s.log.Error("render", "page", page, "err", err)
 	}
+}
+
+// compactNum renders large integers as "48.2k" / "1.2m" — used in the
+// investigation list token columns and budget bars.
+func compactNum(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fm", float64(n)/1_000_000)
+	case n >= 10_000:
+		return fmt.Sprintf("%dk", n/1000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// shortID truncates a long opaque ID for display, keeping the tail visually
+// distinguishable. "inv_c923e5006683" → "inv_c923e500…".
+func shortID(s string, keep int) string {
+	if len(s) <= keep {
+		return s
+	}
+	return s[:keep] + "…"
+}
+
+// sinceUTC formats a timestamp as a humanish "12s ago" / "1h ago" string for
+// list views. Past 24h falls back to the absolute date.
+func sinceUTC(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+	return t.UTC().Format("2006-01-02")
+}
+
+func pct(used, max int) int {
+	if max <= 0 {
+		return 0
+	}
+	p := used * 100 / max
+	if p > 100 {
+		return 100
+	}
+	return p
+}
+
+// findCount safely fetches a severity bucket from the per-investigation
+// counts map; templates can't index a map[string]FindingCounts directly
+// because the value type is a struct so we return ints here.
+func findCount(counts map[string]store.FindingCounts, invID, severity string) int {
+	c := counts[invID]
+	switch severity {
+	case "critical":
+		return c.Critical
+	case "error":
+		return c.Error
+	case "warn":
+		return c.Warn
+	case "info":
+		return c.Info
+	}
+	return 0
+}
+
+// barRepeat returns a slice of length n so a template can {{range}} to draw
+// a stripe per finding without arithmetic in HTML.
+func barRepeat(n int) []struct{} {
+	if n > 24 {
+		n = 24
+	}
+	return make([]struct{}, n)
 }
 
 // prettyJSON formats raw JSON bytes for display. Best-effort — returns the
@@ -499,11 +646,34 @@ func (s *Server) handleInvestigationsList(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	counts, _ := s.store.FindingCountsByInvestigation(r.Context())
+	maxSteps, maxTokens := 0, 0
+	if s.loop != nil {
+		maxSteps, maxTokens = s.loop.Budgets()
+	}
+	// Filter chip selection — keep state in URL so links/back-button work.
+	filter := r.URL.Query().Get("f")
+	var statusBuckets = struct{ All, Active, Done, Aborted int }{}
+	for _, i := range invs {
+		statusBuckets.All++
+		switch i.Status {
+		case "active", "waiting":
+			statusBuckets.Active++
+		case "done":
+			statusBuckets.Done++
+		case "aborted":
+			statusBuckets.Aborted++
+		}
+	}
 	s.renderForReq(w, r, "investigations_list", map[string]any{
-		"Title":      "Investigations",
-		"Version":    version.Version,
-		"Items":      invs,
-		"LLMEnabled": s.loop != nil,
+		"Title":         "Investigations",
+		"Items":         invs,
+		"FindingCounts": counts,
+		"LLMEnabled":    s.loop != nil,
+		"MaxSteps":      maxSteps,
+		"MaxTokens":     maxTokens,
+		"Filter":        filter,
+		"Buckets":       statusBuckets,
 	})
 }
 
