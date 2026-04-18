@@ -20,6 +20,7 @@ type Investigation struct {
 	TotalPromptTokens     int
 	TotalCompletionTokens int
 	TotalToolCalls        int
+	CompactionTokens      int // tokens spent on internal compaction calls (review C2)
 	SummaryJSON           sql.NullString
 }
 
@@ -77,11 +78,11 @@ func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation,
 	var inv Investigation
 	err := s.db.QueryRowContext(ctx, `
         SELECT id, goal, status, created_by, created_at, updated_at, model, base_url,
-               total_prompt_tokens, total_completion_tokens, total_tool_calls, summary_json
+               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json
           FROM investigations WHERE id=?`, id).
 		Scan(&inv.ID, &inv.Goal, &inv.Status, &inv.CreatedBy, &inv.CreatedAt, &inv.UpdatedAt,
 			&inv.Model, &inv.BaseURL,
-			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.SummaryJSON)
+			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Investigation{}, fmt.Errorf("investigation %s not found", id)
 	}
@@ -92,6 +93,16 @@ func (s *Store) UpdateInvestigationStatus(ctx context.Context, id, status string
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE investigations SET status=?, updated_at=? WHERE id=?`,
 		status, time.Now().UTC(), id)
+	return err
+}
+
+// AccumulateCompactionTokens tallies prompt+completion tokens spent on
+// internal compaction calls. Kept separate from total_*_tokens so the
+// investigation budget gate can subtract them (review C2).
+func (s *Store) AccumulateCompactionTokens(ctx context.Context, id string, total int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET compaction_tokens = compaction_tokens + ?, updated_at=? WHERE id=?`,
+		total, time.Now().UTC(), id)
 	return err
 }
 
@@ -126,7 +137,7 @@ func (s *Store) ListInvestigations(ctx context.Context, limit int) ([]Investigat
 	}
 	rows, err := s.db.QueryContext(ctx, `
         SELECT id, goal, status, created_by, created_at, updated_at, model, base_url,
-               total_prompt_tokens, total_completion_tokens, total_tool_calls, summary_json
+               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json
           FROM investigations ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -137,7 +148,7 @@ func (s *Store) ListInvestigations(ctx context.Context, limit int) ([]Investigat
 		var inv Investigation
 		if err := rows.Scan(&inv.ID, &inv.Goal, &inv.Status, &inv.CreatedBy, &inv.CreatedAt, &inv.UpdatedAt,
 			&inv.Model, &inv.BaseURL,
-			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.SummaryJSON); err != nil {
+			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON); err != nil {
 			return nil, err
 		}
 		out = append(out, inv)

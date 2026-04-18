@@ -169,8 +169,9 @@ func main() {
 	}()
 
 	auth := web.AuthConfig{
-		Username:     envOr("RECON_ADMIN_USER", ""),
-		PasswordHash: envOr("RECON_ADMIN_PASSWORD_HASH", ""),
+		Username:       envOr("RECON_ADMIN_USER", ""),
+		PasswordHash:   envOr("RECON_ADMIN_PASSWORD_HASH", ""),
+		BehindTLSProxy: envOr("RECON_BEHIND_TLS_PROXY", "") == "true",
 	}
 	if auth.Username != "" && auth.PasswordHash == "" {
 		log.Error("RECON_ADMIN_USER set but RECON_ADMIN_PASSWORD_HASH missing — refusing to start")

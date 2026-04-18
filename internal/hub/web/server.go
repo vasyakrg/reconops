@@ -38,9 +38,10 @@ type Server struct {
 // AuthConfig is the public knob set by cmd/hub. Username + bcrypt password
 // hash come from env / yaml; SessionTTL defaults to 12h.
 type AuthConfig struct {
-	Username     string
-	PasswordHash string
-	SessionTTL   time.Duration
+	Username       string
+	PasswordHash   string
+	SessionTTL     time.Duration
+	BehindTLSProxy bool
 }
 
 func (a AuthConfig) Enabled() bool { return a.Username != "" && a.PasswordHash != "" }
@@ -310,11 +311,18 @@ func (s *Server) handleRunsNew(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	hosts, _ := s.store.ListHosts(r.Context())
+	// (review C1) Read freshly issued token from server-side flash, NOT
+	// from URL query — putting secrets in URLs leaks them to nginx
+	// access_log, browser history, Referer headers.
+	issued := ""
+	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
+		issued = s.sessions.popFlash(sid.Value, "issued_token")
+	}
 	s.renderForReq(w, r, "settings", map[string]any{
 		"Title":   "Settings",
 		"Version": version.Version,
 		"Hosts":   hosts,
-		"Issued":  r.URL.Query().Get("issued"),
+		"Issued":  issued,
 	})
 }
 
@@ -347,7 +355,12 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r.Context(), authedUser(r), "token.issue",
 		map[string]any{"agent_id": agentID, "ttl": ttl.String()})
-	http.Redirect(w, r, "/settings?issued="+tok, http.StatusSeeOther)
+	// (review C1) Stash the freshly-issued token in server-side flash so
+	// the redirect URL stays clean (nginx logs / browser history / Referer).
+	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
+		s.sessions.setFlash(sid.Value, "issued_token", tok)
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
 // audit writes an audit row, escalating any failure to ERROR-level slog —
