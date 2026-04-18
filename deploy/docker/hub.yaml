@@ -28,3 +28,8 @@ llm:
 
 runner:
   per_agent_rpm: 30
+
+install:
+  download_base_url: https://github.com/vasyakrg/recon/releases/download/v0.1.0
+  agent_grpc_endpoint: hub:9443
+  version: 0.1.0

@@ -36,7 +36,23 @@ type Server struct {
 	tpl      *template.Template
 	log      *slog.Logger
 	auth     authConfig
+	install  InstallConfig
 	sessions *sessionStore
+}
+
+// InstallConfig surfaces the hub's "Quick install" knobs to the web layer:
+// where the install script downloads the agent tarball from, and what
+// host:port the agent should configure as its hub endpoint. Both must be set
+// for the /hosts "Quick install" form to render — otherwise it's hidden.
+type InstallConfig struct {
+	DownloadBaseURL   string
+	AgentGRPCEndpoint string
+	Version           string
+}
+
+// Enabled returns true when the operator filled in the install knobs.
+func (i InstallConfig) Enabled() bool {
+	return i.DownloadBaseURL != "" && i.AgentGRPCEndpoint != ""
 }
 
 // AuthConfig is the public knob set by cmd/hub. Username + bcrypt password
@@ -54,7 +70,7 @@ func (a AuthConfig) Enabled() bool { return a.Username != "" && a.PasswordHash !
 func GenPasswordHash(pw string) (string, error) { return PasswordHashFromPlaintext(pw) }
 
 func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loop,
-	auth AuthConfig, log *slog.Logger) (*Server, error) {
+	auth AuthConfig, install InstallConfig, log *slog.Logger) (*Server, error) {
 	tpl, err := template.New("").Funcs(template.FuncMap{
 		"prettyJSON": prettyJSON,
 		"truncate":   truncate,
@@ -89,6 +105,7 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 	return &Server{
 		store: st, runner: runner, loop: loop, tpl: tpl, log: log,
 		auth:     authConfig(auth),
+		install:  install,
 		sessions: newSessionStore(),
 	}, nil
 }
@@ -103,6 +120,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/static/", staticHandler())
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
+	// Public install endpoint — no session, no CSRF. Authentication is the
+	// single-use bootstrap token embedded in the URL itself, validated by
+	// the agent's Enroll RPC at install time.
+	mux.HandleFunc("/install/agent.sh", s.handleInstallAgentScript)
 
 	// Authenticated endpoints. requireAuth is a no-op when auth is not
 	// configured (single-trust loopback mode).
@@ -128,6 +149,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/settings/revoke-token", auth(s.handleRevokeToken))
 	mux.HandleFunc("/hosts/delete", auth(s.handleHostDelete))
 	mux.HandleFunc("/hosts/revoke", auth(s.handleHostRevoke))
+	mux.HandleFunc("/hosts/quick-install", auth(s.handleQuickInstall))
 	return mux
 }
 
@@ -167,11 +189,19 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Pull the freshly-issued install one-liner out of the session flash, if
+	// the operator just submitted the Quick install form.
+	var oneLiner, installAgentID string
+	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
+		oneLiner = s.sessions.popFlash(sid.Value, "install_one_liner")
+		installAgentID = s.sessions.popFlash(sid.Value, "install_agent_id")
+	}
 	s.renderForReq(w, r, "hosts", map[string]any{
-		"Title":        "Hosts",
-		"Version":      version.Version,
-		"ContentBlock": "hosts",
-		"Hosts":        hosts,
+		"Title":           "Hosts",
+		"Hosts":           hosts,
+		"InstallEnabled":  s.install.Enabled(),
+		"InstallOneLiner": oneLiner,
+		"InstallAgentID":  installAgentID,
 	})
 }
 

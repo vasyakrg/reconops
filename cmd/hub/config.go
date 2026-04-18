@@ -15,6 +15,25 @@ type Config struct {
 	Auth    AuthConfig    `yaml:"auth"`
 	LLM     LLMConfig     `yaml:"llm"`
 	Runner  RunnerConfig  `yaml:"runner"`
+	Install InstallConfig `yaml:"install"`
+}
+
+// InstallConfig populates the "Quick install" one-liner shown in the hub UI.
+// Both fields are deployment-specific and have no safe defaults — the operator
+// must supply them before issuing install URLs.
+type InstallConfig struct {
+	// DownloadBaseURL is the directory the install script wgets the agent
+	// tarball from. Typically a GitHub Releases asset directory:
+	//   https://github.com/vasyakrg/recon/releases/download/v0.1.0
+	DownloadBaseURL string `yaml:"download_base_url"`
+	// AgentGRPCEndpoint is host:port the agent should configure as its
+	// hub.endpoint. Different from the operator UI URL — the hub gRPC port
+	// (9443 by default) is what agents talk to over mTLS.
+	AgentGRPCEndpoint string `yaml:"agent_grpc_endpoint"`
+	// Version is the release tag the install script downloads from
+	// DownloadBaseURL. Falls back to "latest" if unset, but operators are
+	// strongly encouraged to pin.
+	Version string `yaml:"version"`
 }
 
 // LLMConfig drives the investigator's Claude / OpenAI-compatible client.
@@ -99,6 +118,15 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.LLM.MaxTokensPerInvestigation == 0 {
 		cfg.LLM.MaxTokensPerInvestigation = 500_000
+	}
+	if cfg.Install.Version == "" {
+		cfg.Install.Version = envOr("RECON_INSTALL_VERSION", "latest")
+	}
+	if cfg.Install.DownloadBaseURL == "" {
+		cfg.Install.DownloadBaseURL = envOr("RECON_INSTALL_DOWNLOAD_BASE", "")
+	}
+	if cfg.Install.AgentGRPCEndpoint == "" {
+		cfg.Install.AgentGRPCEndpoint = envOr("RECON_INSTALL_GRPC_ENDPOINT", "")
 	}
 	return cfg, nil
 }

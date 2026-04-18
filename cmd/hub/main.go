@@ -181,7 +181,12 @@ func main() {
 		log.Warn("hub is running WITHOUT auth — bind to loopback only and reverse-proxy with auth before exposing")
 	}
 
-	webSrv, err := web.NewServer(st, hr, loop, auth, log.With("comp", "web"))
+	install := web.InstallConfig{
+		DownloadBaseURL:   cfg.Install.DownloadBaseURL,
+		AgentGRPCEndpoint: cfg.Install.AgentGRPCEndpoint,
+		Version:           cfg.Install.Version,
+	}
+	webSrv, err := web.NewServer(st, hr, loop, auth, install, log.With("comp", "web"))
 	if err != nil {
 		log.Error("web init", "err", err)
 		os.Exit(2)

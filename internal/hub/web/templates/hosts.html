@@ -5,9 +5,38 @@
     <div class="sub mono">{{len .Hosts}} enrolled</div>
   </div>
   <div class="actions">
+    {{if .InstallEnabled}}
+    <a class="btn sm ghost" href="#quick-install">+ Quick install</a>
+    {{end}}
     <a class="btn sm ghost" href="/settings#tokens">+ Bootstrap token</a>
   </div>
 </header>
+
+{{if .InstallOneLiner}}
+<div class="card" style="border-color:color-mix(in oklab, var(--ok) 35%, var(--border));margin-bottom:14px;background:var(--ok-bg)">
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ok);font-weight:600;margin-bottom:6px">Install one-liner for <span class="mono">{{.InstallAgentID}}</span> — copy now (token shown once)</div>
+  <pre id="install-cmd" style="margin:0;user-select:all">{{.InstallOneLiner}}</pre>
+  <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+    <button type="button" class="btn xs" onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent).then(()=>this.textContent='copied ✓')">copy to clipboard</button>
+    <span class="dim" style="font-size:10.5px">Send via SSH or DM. Run on the target host as root.</span>
+  </div>
+</div>
+{{end}}
+
+{{if .InstallEnabled}}
+<form id="quick-install" method="post" action="/hosts/quick-install" class="panel" style="padding:12px 14px;margin-bottom:18px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div style="flex:1;min-width:240px">
+    <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:4px">agent_id (must be unique per host)</label>
+    <input type="text" name="agent_id" required placeholder="prod-app-01" style="width:100%;font-family:var(--font-mono);font-size:12px">
+  </div>
+  <div style="width:90px">
+    <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:4px">TTL</label>
+    <input type="text" name="ttl" value="1h" style="width:100%;font-family:var(--font-mono);font-size:12px">
+  </div>
+  <button class="btn primary" type="submit">Generate install link</button>
+</form>
+{{end}}
 
 <div class="panel">
 {{if .Hosts}}
