@@ -16,12 +16,28 @@
   .small { color: #888; font-size: 12px; }
   .empty { color: #888; font-style: italic; }
   pre { background: #f4f4f4; padding: 8px; overflow: auto; font-size: 12px; }
+  .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+  .badge-ok       { background: #d6f5d6; color: #1a7f37; }
+  .badge-error    { background: #fbdada; color: #c93c37; }
+  .badge-pending  { background: #fff3c2; color: #8a6a00; }
+  .badge-running  { background: #d6e6ff; color: #1f51a8; }
+  .badge-info     { background: #e8e8e8; color: #555; }
+  details { margin: 4px 0; }
+  details summary { cursor: pointer; }
+  form.inline { display: inline; }
+  button, input[type=submit] { padding: 4px 8px; font-size: 12px; }
+  .hint-warn  { color: #b58900; }
+  .hint-error { color: #c93c37; }
 </style>
 </head>
 <body>
   <h1>Recon</h1>
   <p class="small">Read-only diagnostic hub · v{{.Version}}</p>
-  <nav><a href="/hosts">Hosts</a></nav>
+  <nav>
+    <a href="/hosts">Hosts</a>
+    <a href="/collectors">Collectors</a>
+    <a href="/runs">Runs</a>
+  </nav>
   {{template "content" .}}
 </body>
 </html>{{end}}

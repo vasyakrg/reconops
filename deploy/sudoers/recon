@@ -1,0 +1,12 @@
+# /etc/sudoers.d/recon — read-only commands the recon agent may invoke.
+#
+# Goal: layer 4 of the read-only guarantee (PROJECT.md §3.4). The agent
+# whitelist already constrains arguments shape; sudoers below pins the
+# binaries to absolute paths with NOPASSWD. Do NOT add wildcards or any
+# command capable of mutating system state.
+#
+# Install with:  install -m 0440 deploy/sudoers/recon /etc/sudoers.d/recon
+
+Cmnd_Alias RECON_RO = /bin/journalctl, /usr/sbin/ss, /sbin/ip, /sbin/iptables -L -n -v, /bin/systemctl list-units *, /bin/systemctl status *
+
+recon ALL=(root) NOPASSWD: RECON_RO

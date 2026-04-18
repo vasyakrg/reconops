@@ -27,6 +27,14 @@ import (
 	reconpb "github.com/vasyakrg/recon/internal/proto"
 )
 
+// ResultSink receives CollectResult and ArtifactChunk messages from agents.
+// Wired to the hub-side runner so result delivery and run state stay
+// decoupled from the gRPC layer.
+type ResultSink interface {
+	OnResult(agentID string, r *reconpb.CollectResult)
+	OnArtifact(agentID string, a *reconpb.ArtifactChunk)
+}
+
 type Server struct {
 	reconpb.UnimplementedHubServer
 
@@ -34,6 +42,7 @@ type Server struct {
 	pki      *auth.Material
 	clientCA *x509.CertPool
 	log      *slog.Logger
+	sink     ResultSink
 
 	mu      sync.RWMutex
 	streams map[string]*streamHandle // agentID -> stream
@@ -45,6 +54,10 @@ type streamHandle struct {
 	send   chan *reconpb.HubMsg
 	cancel context.CancelFunc
 }
+
+// SetSink registers the runner that consumes CollectResult / ArtifactChunk
+// from agent streams. May be called once after construction.
+func (s *Server) SetSink(sink ResultSink) { s.sink = sink }
 
 func NewServer(st *store.Store, pki *auth.Material, log *slog.Logger) *Server {
 	pool := x509.NewCertPool()
@@ -244,11 +257,15 @@ func (s *Server) Connect(ss reconpb.Hub_ConnectServer) error {
 			_ = s.store.TouchHost(streamCtx, agentID, "online")
 			_ = p
 		case *reconpb.AgentMsg_Result:
-			// Week 1: nothing to do with results yet — the runner will pick
-			// these up in Week 2. Log so we can see them in the demo.
-			s.log.Info("collect result", "agent_id", agentID, "request_id", p.Result.RequestId, "status", p.Result.Status.String())
+			s.log.Debug("collect result", "agent_id", agentID, "request_id", p.Result.RequestId, "status", p.Result.Status.String())
+			if s.sink != nil {
+				s.sink.OnResult(agentID, p.Result)
+			}
 		case *reconpb.AgentMsg_Artifact:
-			s.log.Info("artifact chunk", "agent_id", agentID, "name", p.Artifact.Name, "bytes", len(p.Artifact.Data))
+			s.log.Debug("artifact chunk", "agent_id", agentID, "name", p.Artifact.Name, "bytes", len(p.Artifact.Data))
+			if s.sink != nil {
+				s.sink.OnArtifact(agentID, p.Artifact)
+			}
 		case *reconpb.AgentMsg_Hello:
 			// Re-Hello (e.g. after reconnect) — refresh inventory. Identity
 			// was verified at session start; re-Hello cannot change CN/fp.
@@ -306,9 +323,27 @@ func (s *Server) unregisterStream(agentID string) {
 	delete(s.streams, agentID)
 }
 
+// IsOnline reports whether the agent currently has an active Connect stream.
+func (s *Server) IsOnline(agentID string) bool {
+	s.mu.RLock()
+	_, ok := s.streams[agentID]
+	s.mu.RUnlock()
+	return ok
+}
+
+// OnlineAgents returns the set of agent IDs with an active stream right now.
+func (s *Server) OnlineAgents() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.streams))
+	for id := range s.streams {
+		out = append(out, id)
+	}
+	return out
+}
+
 // SendCollect pushes a CollectRequest to the named agent. Returns false if
-// the agent is not currently connected. Used by the runner in week 2 — week
-// 1 keeps it for completeness.
+// the agent is not currently connected.
 func (s *Server) SendCollect(agentID string, req *reconpb.CollectRequest) bool {
 	s.mu.RLock()
 	h, ok := s.streams[agentID]

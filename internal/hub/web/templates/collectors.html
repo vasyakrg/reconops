@@ -1,0 +1,19 @@
+{{define "collectors"}}
+<h2>Collector catalog</h2>
+{{if .Entries}}
+<table>
+  <thead><tr><th>Collector</th><th>Version</th><th>Available on</th></tr></thead>
+  <tbody>
+  {{range .Entries}}
+    <tr>
+      <td><code>{{.Name}}</code></td>
+      <td>{{.Latest}}</td>
+      <td>{{range .Hosts}}<a href="/hosts/{{.}}">{{.}}</a> {{end}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No collectors registered (no agent has connected yet).</p>
+{{end}}
+{{end}}

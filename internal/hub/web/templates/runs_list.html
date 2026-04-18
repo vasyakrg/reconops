@@ -1,0 +1,21 @@
+{{define "runs_list"}}
+<h2>Runs</h2>
+{{if .Runs}}
+<table>
+  <thead><tr><th>ID</th><th>Name</th><th>Created</th><th>Finished</th><th>Status</th></tr></thead>
+  <tbody>
+  {{range .Runs}}
+    <tr>
+      <td><a href="/runs/{{.ID}}"><code>{{truncate .ID 16}}…</code></a></td>
+      <td>{{.Name}}</td>
+      <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+      <td>{{if .FinishedAt.Valid}}{{.FinishedAt.Time.Format "15:04:05"}}{{else}}—{{end}}</td>
+      <td><span class="badge badge-{{if eq .Status "running"}}running{{else if eq .Status "done"}}ok{{else}}info{{end}}">{{.Status}}</span></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No runs yet. Open a host page and click <em>Run</em> on a collector.</p>
+{{end}}
+{{end}}

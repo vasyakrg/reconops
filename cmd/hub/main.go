@@ -16,6 +16,7 @@ import (
 	"github.com/vasyakrg/recon/internal/common/version"
 	"github.com/vasyakrg/recon/internal/hub/api"
 	"github.com/vasyakrg/recon/internal/hub/auth"
+	hubrunner "github.com/vasyakrg/recon/internal/hub/runner"
 	"github.com/vasyakrg/recon/internal/hub/store"
 	"github.com/vasyakrg/recon/internal/hub/web"
 )
@@ -103,6 +104,9 @@ func main() {
 	}
 
 	apiSrv := api.NewServer(st, pki, log.With("comp", "grpc"))
+	hr := hubrunner.New(st, apiSrv, cfg.Storage.ArtifactDir, log.With("comp", "runner"))
+	apiSrv.SetSink(hr)
+
 	lis, gsrv, err := apiSrv.Listen(cfg.Server.GRPCAddr)
 	if err != nil {
 		log.Error("grpc listen", "err", err)
@@ -120,7 +124,7 @@ func main() {
 		gsrv.GracefulStop()
 	}()
 
-	webSrv, err := web.NewServer(st, log.With("comp", "web"))
+	webSrv, err := web.NewServer(st, hr, log.With("comp", "web"))
 	if err != nil {
 		log.Error("web init", "err", err)
 		os.Exit(2)

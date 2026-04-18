@@ -11,6 +11,7 @@ import (
 
 	_ "github.com/vasyakrg/recon/internal/agent/collectors/system" // register system_info
 	"github.com/vasyakrg/recon/internal/agent/conn"
+	"github.com/vasyakrg/recon/internal/agent/exec"
 	"github.com/vasyakrg/recon/internal/common/version"
 )
 
@@ -20,6 +21,12 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	log.Info("recon-agent starting", "version", version.Full(), "config", *cfgPath)
+
+	// Register the exec gateway whitelist before any collector can run.
+	// Collectors that try to invoke binaries outside this list will panic
+	// (PROJECT.md §3.4 layer 3); the agent runner recovers and reports
+	// STATUS_ERROR — agent stays up.
+	exec.RegisterDefaults()
 
 	cfg, err := conn.LoadConfig(*cfgPath)
 	if err != nil {

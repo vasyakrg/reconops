@@ -1,0 +1,35 @@
+{{define "host_detail"}}
+<h2>Host {{.Host.ID}} <span class="status-{{.Host.Status}}">[{{.Host.Status}}]</span></h2>
+<p class="small">Agent v{{.Host.AgentVersion}} · last seen {{.Host.LastSeenAt.Format "2006-01-02 15:04:05"}} UTC · fingerprint <code>{{truncate .Host.CertFingerprint 23}}…</code></p>
+
+<h3>Labels</h3>
+<ul>{{range $k, $v := .Host.Labels}}<li><code>{{$k}}={{$v}}</code></li>{{end}}</ul>
+
+<h3>Auto-facts</h3>
+<ul>{{range $k, $v := .Host.Facts}}<li><code>{{$k}}={{$v}}</code></li>{{end}}</ul>
+
+<h3>Available collectors</h3>
+{{if .Collectors}}
+<table>
+  <thead><tr><th>Collector</th><th>Version</th><th>Run</th></tr></thead>
+  <tbody>
+  {{range .Collectors}}
+    <tr>
+      <td><code>{{.Name}}</code></td>
+      <td>{{.Version}}</td>
+      <td>
+        <form class="inline" action="/runs/new" method="post">
+          <input type="hidden" name="host_id" value="{{$.Host.ID}}">
+          <input type="hidden" name="collector" value="{{.Name}}">
+          <input type="hidden" name="name" value="manual: {{.Name}} on {{$.Host.ID}}">
+          <button type="submit">Run</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">Agent has not announced any collectors.</p>
+{{end}}
+{{end}}

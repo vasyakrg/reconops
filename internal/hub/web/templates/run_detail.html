@@ -1,0 +1,39 @@
+{{define "run_detail"}}
+<h2>Run <code>{{.Run.ID}}</code></h2>
+<p class="small">{{.Run.Name}} · status <span class="badge badge-{{if eq .Run.Status "running"}}running{{else}}ok{{end}}">{{.Run.Status}}</span> · created {{.Run.CreatedAt.Format "2006-01-02 15:04:05"}} UTC</p>
+<p><a href="/runs">← all runs</a></p>
+
+<table>
+  <thead>
+    <tr><th>Host</th><th>Collector</th><th>Status</th><th>Duration</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+  {{range .Tasks}}
+    <tr>
+      <td><a href="/hosts/{{.HostID}}">{{.HostID}}</a></td>
+      <td><code>{{.Collector}}</code></td>
+      <td><span class="badge badge-{{if eq .Status "ok"}}ok{{else if eq .Status "pending"}}pending{{else if eq .Status "sent"}}running{{else}}error{{end}}">{{.Status}}</span></td>
+      <td>{{if .DurationMs.Valid}}{{.DurationMs.Int64}} ms{{else}}—{{end}}</td>
+      <td>
+        {{if .Error}}<div class="hint-error small">{{.Error}}</div>{{end}}
+        {{if .Result}}
+          {{if .Result.HintsJSON}}
+            <details><summary>Hints</summary><pre>{{prettyJSON .Result.HintsJSON}}</pre></details>
+          {{end}}
+          {{if .Result.DataJSON}}
+            <details><summary>Data ({{len .Result.DataJSON}} bytes)</summary><pre>{{prettyJSON .Result.DataJSON}}</pre></details>
+          {{end}}
+          {{if .Result.Stderr}}
+            <details><summary>Stderr</summary><pre>{{.Result.Stderr}}</pre></details>
+          {{end}}
+        {{end}}
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No tasks for this run.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<p class="small">Auto-refresh: <a href="/runs/{{.Run.ID}}">reload</a> while status is <em>running</em>.</p>
+{{end}}

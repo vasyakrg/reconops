@@ -122,3 +122,12 @@ func Manifests() []Manifest {
 }
 
 func (m Manifest) JSON() ([]byte, error) { return json.Marshal(m) }
+
+// UnregisterForTest removes a collector from the registry. Test-only —
+// production code never unregisters compiled-in collectors (PROJECT.md §3.4
+// layer 2). Safe to call for an unknown name.
+func UnregisterForTest(name string) {
+	mu.Lock()
+	defer mu.Unlock()
+	delete(registry, name)
+}

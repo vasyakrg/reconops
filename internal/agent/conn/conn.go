@@ -10,15 +10,31 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/vasyakrg/recon/internal/agent/collect"
+	"github.com/vasyakrg/recon/internal/agent/runner"
 	"github.com/vasyakrg/recon/internal/common/version"
 	reconpb "github.com/vasyakrg/recon/internal/proto"
 )
+
+// streamSender serializes Send() calls into the bidi gRPC stream. The runner
+// emits results from goroutines, the heartbeat loop emits Heartbeats, and
+// gRPC streams are not safe for concurrent Send.
+type streamSender struct {
+	mu     sync.Mutex
+	stream reconpb.Hub_ConnectClient
+}
+
+func (s *streamSender) Send(m *reconpb.AgentMsg) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream.Send(m)
+}
 
 type Client struct {
 	cfg *Config
@@ -76,14 +92,17 @@ func (c *Client) session(ctx context.Context) error {
 		return fmt.Errorf("connect rpc: %w", err)
 	}
 
-	if err := c.sendHello(stream); err != nil {
+	send := &streamSender{stream: stream}
+	if err := c.sendHello(send); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
 	c.log.Info("hello sent", "agent_id", c.cfg.Identity.ID, "endpoint", c.cfg.Hub.Endpoint)
 
+	run := runner.New(c.cfg.Runtime.MaxConcurrentCollectors, c.cfg.Runtime.DefaultTimeout, c.log.With("comp", "runner"))
+
 	hbCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go c.heartbeatLoop(hbCtx, stream)
+	go c.heartbeatLoop(hbCtx, send)
 
 	for {
 		msg, err := stream.Recv()
@@ -95,11 +114,13 @@ func (c *Client) session(ctx context.Context) error {
 		}
 		switch p := msg.Payload.(type) {
 		case *reconpb.HubMsg_Collect:
-			c.log.Info("CollectRequest received (week 2 will execute)", "request_id", p.Collect.RequestId, "collector", p.Collect.Collector)
+			c.log.Info("collect request", "request_id", p.Collect.RequestId, "collector", p.Collect.Collector)
+			run.Handle(hbCtx, p.Collect, send)
 		case *reconpb.HubMsg_Cancel:
-			c.log.Info("CancelRequest received", "request_id", p.Cancel.RequestId)
+			ok := run.Cancel(p.Cancel.RequestId)
+			c.log.Info("cancel request", "request_id", p.Cancel.RequestId, "found", ok)
 		case *reconpb.HubMsg_Config:
-			c.log.Info("ConfigUpdate received", "values", p.Config.Values)
+			c.log.Info("config update", "values", p.Config.Values)
 		}
 	}
 }
@@ -139,7 +160,7 @@ func (c *Client) serverName() string {
 	return host
 }
 
-func (c *Client) sendHello(stream reconpb.Hub_ConnectClient) error {
+func (c *Client) sendHello(send *streamSender) error {
 	manifests := collect.Manifests()
 	pbManifests := make([]*reconpb.CollectorManifest, 0, len(manifests))
 	for _, m := range manifests {
@@ -169,7 +190,7 @@ func (c *Client) sendHello(stream reconpb.Hub_ConnectClient) error {
 		labels[k] = v
 	}
 
-	return stream.Send(&reconpb.AgentMsg{Payload: &reconpb.AgentMsg_Hello{Hello: &reconpb.Hello{
+	return send.Send(&reconpb.AgentMsg{Payload: &reconpb.AgentMsg_Hello{Hello: &reconpb.Hello{
 		AgentId:    c.cfg.Identity.ID,
 		Version:    version.Full(),
 		Labels:     labels,
@@ -178,7 +199,7 @@ func (c *Client) sendHello(stream reconpb.Hub_ConnectClient) error {
 	}}})
 }
 
-func (c *Client) heartbeatLoop(ctx context.Context, stream reconpb.Hub_ConnectClient) {
+func (c *Client) heartbeatLoop(ctx context.Context, send *streamSender) {
 	t := time.NewTicker(c.cfg.Runtime.HeartbeatInterval)
 	defer t.Stop()
 	start := time.Now()
@@ -187,7 +208,7 @@ func (c *Client) heartbeatLoop(ctx context.Context, stream reconpb.Hub_ConnectCl
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			err := stream.Send(&reconpb.AgentMsg{Payload: &reconpb.AgentMsg_Heartbeat{Heartbeat: &reconpb.Heartbeat{
+			err := send.Send(&reconpb.AgentMsg{Payload: &reconpb.AgentMsg_Heartbeat{Heartbeat: &reconpb.Heartbeat{
 				AgentId: c.cfg.Identity.ID,
 				UptimeS: int64(time.Since(start).Seconds()),
 				TsUnix:  time.Now().Unix(),
