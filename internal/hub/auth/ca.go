@@ -106,6 +106,13 @@ func serverCertCovers(path string, dnsNames []string, ipAddrs []net.IP) (bool, e
 	if err != nil {
 		return false, err
 	}
+	want := map[string]struct{}{}
+	for _, n := range dnsNames {
+		want[n] = struct{}{}
+	}
+	for _, ip := range ipAddrs {
+		want[ip.String()] = struct{}{}
+	}
 	have := map[string]struct{}{}
 	for _, n := range c.DNSNames {
 		have[n] = struct{}{}
@@ -113,13 +120,19 @@ func serverCertCovers(path string, dnsNames []string, ipAddrs []net.IP) (bool, e
 	for _, ip := range c.IPAddresses {
 		have[ip.String()] = struct{}{}
 	}
-	for _, n := range dnsNames {
-		if _, ok := have[n]; !ok {
+	if len(have) != len(want) {
+		return false, nil
+	}
+	for k := range want {
+		if _, ok := have[k]; !ok {
 			return false, nil
 		}
 	}
-	for _, ip := range ipAddrs {
-		if _, ok := have[ip.String()]; !ok {
+	// Symmetric: also detect SANs that exist in the cert but were removed
+	// from yaml — operator deleting a hostname expects the trust path to
+	// shrink (review M4).
+	for k := range have {
+		if _, ok := want[k]; !ok {
 			return false, nil
 		}
 	}

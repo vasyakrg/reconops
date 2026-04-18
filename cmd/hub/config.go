@@ -46,6 +46,11 @@ type InstallConfig struct {
 	// falls back to deriving from the request — which only works when
 	// the same URL is reachable from both sides.
 	ExternalURL string `yaml:"external_url"`
+	// TrustedTLS=true drops the `-k` (insecure) flag from the install
+	// one-liner. Set to true once the hub is fronted by a CA-issued
+	// cert so the script fetch is verified. Default false to keep the
+	// self-signed compose default working out of the box.
+	TrustedTLS bool `yaml:"trusted_tls"`
 	// Version selects which release the install script pulls from. Defaults
 	// to "latest" so operators get the most recent published release;
 	// override to a tag (e.g. "0.1.0") to pin a specific build.
@@ -149,6 +154,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Install.ExternalURL == "" {
 		cfg.Install.ExternalURL = envOr("RECON_INSTALL_EXTERNAL_URL", "")
+	}
+	if !cfg.Install.TrustedTLS {
+		cfg.Install.TrustedTLS = envOr("RECON_INSTALL_TRUSTED_TLS", "") == "true"
 	}
 	return cfg, nil
 }

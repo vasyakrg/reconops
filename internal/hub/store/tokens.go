@@ -84,6 +84,26 @@ func (s *Store) ListBootstrapTokens(ctx context.Context, limit int) ([]Bootstrap
 	return out, rows.Err()
 }
 
+// LookupBootstrapToken reports whether the (plaintext, agentID) pair points
+// at a still-valid token row — exists, not expired, not consumed, agent_id
+// matches. Used by /install/agent.sh to refuse rendering the script body
+// for arbitrary probes (review M3) without consuming the token.
+func (s *Store) LookupBootstrapToken(ctx context.Context, plaintext, agentID string) (bool, error) {
+	hash := HashToken(plaintext)
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM bootstrap_tokens
+         WHERE token_hash = ?
+           AND consumed_at IS NULL
+           AND expires_at > ?
+           AND expected_agent_id = ?`,
+		hash, time.Now().UTC(), agentID).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 // DeleteBootstrapToken removes an unused token by its sha256 hash. Idempotent
 // — returns nil when the row was already gone (already consumed and operator
 // clicked revoke later, or another session beat us). Already-consumed rows

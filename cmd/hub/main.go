@@ -209,6 +209,7 @@ func main() {
 		GRPCPort:          cfg.Install.GRPCPort,
 		Version:           cfg.Install.Version,
 		ExternalURL:       cfg.Install.ExternalURL,
+		TrustedTLS:        cfg.Install.TrustedTLS,
 	}
 	webSrv, err := web.NewServer(st, hr, loop, auth, install, log.With("comp", "web"))
 	if err != nil {

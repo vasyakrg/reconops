@@ -60,6 +60,14 @@ type InstallConfig struct {
 	// don't share the same hostname/port (e.g. orbstack autoroute on
 	// :443 vs nginx exposed on :8443).
 	ExternalURL string
+	// TrustedTLS=true tells the install one-liner to verify the hub's
+	// TLS cert (drops curl's `-k` flag). Default is false because the
+	// `make compose-up` path generates a self-signed cert and any
+	// unconfigured deployment would otherwise refuse to install. Flip
+	// to true once you front the hub with a real CA-issued cert —
+	// keeps the script fetch from being silently substitutable by a
+	// MITM (review M2).
+	TrustedTLS bool
 }
 
 // Enabled returns true when the operator filled in the install knobs.

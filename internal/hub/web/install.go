@@ -42,6 +42,18 @@ func (s *Server) handleInstallAgentScript(w http.ResponseWriter, r *http.Request
 		http.Error(w, "token and id are required query params", http.StatusBadRequest)
 		return
 	}
+	// Validate the (token, agent_id) pair without consuming the token —
+	// stops unauthenticated probes from harvesting the script body
+	// (which leaks DownloadBase, hub endpoint, agent_id naming, etc.).
+	// Real agents proceed normally; the actual consume happens at Enroll.
+	ok, err := s.store.LookupBootstrapToken(r.Context(), token, agentID)
+	if err != nil || !ok {
+		// Returning 404 (not 401/403) keeps the surface from
+		// distinguishing "endpoint exists" from "wrong token", same
+		// shape an attacker would see for a bogus path.
+		http.NotFound(w, r)
+		return
+	}
 	hubEP := q.Get("hub")
 	if hubEP == "" {
 		hubEP = s.install.AgentGRPCEndpoint
@@ -116,10 +128,23 @@ func (s *Server) handleQuickInstall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Quick install for an agent_id we've seen before is the operator's
-	// "wipe and reinstall this host" lever. Revoke the prior identity so
+	// "wipe and reinstall this host" lever — revoke the prior identity so
 	// the install script's fresh enroll attempt isn't refused with
-	// AlreadyExists. Idempotent: no-op when the agent_id is brand new.
-	_ = s.store.RevokeIdentity(r.Context(), agentID, "quick-install reissue")
+	// AlreadyExists. Refuse to do it silently when the host is currently
+	// online (review M1) — operator must explicitly revoke from /hosts/<id>
+	// or pick a different agent_id, otherwise the next gRPC poll from
+	// the live agent would suddenly fail with no warning.
+	if host, err := s.store.GetHost(r.Context(), agentID); err == nil && host.Status == "online" {
+		http.Error(w, "agent_id "+agentID+" is currently online — revoke its cert from /hosts/"+agentID+" first, or pick a different agent_id", http.StatusConflict)
+		return
+	}
+	if err := s.store.RevokeIdentity(r.Context(), agentID, "quick-install reissue"); err == nil {
+		// Audit only when we actually replaced an enrolment row — keeps
+		// brand-new installs from polluting the audit log with
+		// no-op revokes.
+		s.audit(r.Context(), authedUser(r), "identity.revoke",
+			map[string]any{"agent_id": agentID, "reason": "quick-install reissue"})
+	}
 
 	tok, err := investigatorTokenFor(r.Context(), s, agentID, ttl, authedUser(r))
 	if err != nil {
@@ -146,11 +171,16 @@ func (s *Server) handleQuickInstall(w http.ResponseWriter, r *http.Request) {
 		base = scheme + "://" + host
 	}
 	scriptURL := fmt.Sprintf("%s/install/agent.sh?token=%s&id=%s", base, urlEscape(tok), urlEscape(agentID))
-	// curl -k tolerates a self-signed nginx cert — the default for `make
-	// compose-up` deployments. Operator running through a real cert
-	// pays the same -k cost (no harm) and gets the convenience of a
-	// one-liner that works on any hub regardless of TLS provenance.
-	oneLiner := fmt.Sprintf(`curl -fsSLk %q | sudo bash`, scriptURL)
+	// curl flags depend on whether the hub is fronted by a CA-trusted
+	// cert. Default config is self-signed (`make compose-up`), so we
+	// fall back to -k. Once the operator sets install.trusted_tls=true
+	// (or RECON_INSTALL_TRUSTED_TLS=true) the install fetch is verified
+	// — closes the MITM-substitutes-script-on-curl-pull surface (M2).
+	flags := "-fsSL"
+	if !s.install.TrustedTLS {
+		flags = "-fsSLk"
+	}
+	oneLiner := fmt.Sprintf(`curl %s %q | sudo bash`, flags, scriptURL)
 
 	s.audit(r.Context(), authedUser(r), "install.token_issued",
 		map[string]any{"agent_id": agentID, "ttl": ttl.String()})

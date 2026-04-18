@@ -288,18 +288,18 @@ func authedUser(r *http.Request) string {
 	return "operator"
 }
 
-// clientIP extracts the originating client address. Honors X-Forwarded-For
-// (necessary behind nginx — without it the brute-force counter collapses
-// onto a single key for every requester).
-func clientIP(r *http.Request) string {
-	// Caller is responsible for passing through only requests they trust
-	// XFF on; for login we accept it because the alternative is per-server
-	// throttling collapse on shared NAT.
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i > 0 {
-			return strings.TrimSpace(xff[:i])
+// clientIP extracts the originating client address. Trusts X-Forwarded-For
+// ONLY when the operator declared we sit behind a TLS proxy — otherwise
+// any unauthenticated client could rotate the header per /login attempt
+// and slip past the brute-force throttle (review H1).
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if i := strings.IndexByte(xff, ','); i > 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return strings.TrimSpace(xff)
 		}
-		return strings.TrimSpace(xff)
 	}
 	host := r.RemoteAddr
 	if i := strings.LastIndex(host, ":"); i > 0 {
@@ -360,7 +360,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		user := strings.TrimSpace(r.FormValue("username"))
 		// (review H1) Throttle by client IP — bcrypt is slow but not slow
 		// enough for an unbounded attacker. 10 failures / 5 min.
-		ip := clientIP(r)
+		ip := clientIP(r, s.auth.BehindTLSProxy)
 		if !s.sessions.loginAllowed(ip) {
 			s.audit(r.Context(), "anonymous", "auth.login_throttled", map[string]any{"ip": ip})
 			s.renderLogin(w, http.StatusTooManyRequests, user, next,
