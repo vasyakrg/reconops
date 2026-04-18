@@ -31,6 +31,13 @@ runner:
 
 install:
   release_repo_url: https://github.com/vasyakrg/reconops
+  # external_url is the public hub URL the install one-liner uses. Set
+  # this when the operator UI path and the agent network path differ —
+  # e.g. browser hits https://192.168.8.121 (orbstack auto-route on 443)
+  # but agents must reach the published nginx port https://192.168.8.121:8443.
+  # Empty falls back to deriving from the request, which only works when
+  # the same URL is reachable from both the browser and the agent.
+  # external_url: https://192.168.8.121:8443
   # "auto" derives host:port from the install URL's request hostname
   # (honours nginx X-Forwarded-Host) plus grpc_port. Pin to an explicit
   # value (e.g. "hub.example.com:9443") if agents and the operator

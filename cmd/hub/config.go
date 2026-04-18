@@ -38,6 +38,14 @@ type InstallConfig struct {
 	// GRPCPort is the port number agents dial when AgentGRPCEndpoint is
 	// "auto"-derived. Defaults to 9443.
 	GRPCPort int `yaml:"grpc_port"`
+	// ExternalURL is the public hub URL the install one-liner uses
+	// (scheme + host + optional port). Setting this explicitly is the
+	// reliable way to make installs work when the operator browser path
+	// (e.g. orbstack auto-routing on 443) and the agent network path
+	// (typically the published nginx port like 8443) differ. Empty
+	// falls back to deriving from the request — which only works when
+	// the same URL is reachable from both sides.
+	ExternalURL string `yaml:"external_url"`
 	// Version selects which release the install script pulls from. Defaults
 	// to "latest" so operators get the most recent published release;
 	// override to a tag (e.g. "0.1.0") to pin a specific build.
@@ -138,6 +146,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Install.GRPCPort == 0 {
 		cfg.Install.GRPCPort = 9443
+	}
+	if cfg.Install.ExternalURL == "" {
+		cfg.Install.ExternalURL = envOr("RECON_INSTALL_EXTERNAL_URL", "")
 	}
 	return cfg, nil
 }

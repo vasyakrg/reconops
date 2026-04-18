@@ -120,19 +120,26 @@ func (s *Server) handleQuickInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// External URL the script will be fetched from. Honours nginx-set
-	// X-Forwarded-* headers so the URL we hand to the operator points at
-	// the public hostname (and port — see nginx.conf using $http_host),
-	// not the internal hub:8080.
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
+	// Base URL the install script will be fetched from. Priority:
+	// 1. install.external_url in hub.yaml — set this when the operator
+	//    browser path and the agent network path differ (orbstack on :443
+	//    vs nginx exposed on :8443, etc).
+	// 2. X-Forwarded-Host + X-Forwarded-Proto from nginx (depends on
+	//    nginx config preserving the port via $http_host).
+	// 3. r.Host + r.TLS — the bare loopback fallback.
+	base := strings.TrimRight(s.install.ExternalURL, "/")
+	if base == "" {
+		scheme := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		host := r.Header.Get("X-Forwarded-Host")
+		if host == "" {
+			host = r.Host
+		}
+		base = scheme + "://" + host
 	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	scriptURL := fmt.Sprintf("%s://%s/install/agent.sh?token=%s&id=%s", scheme, host, urlEscape(tok), urlEscape(agentID))
+	scriptURL := fmt.Sprintf("%s/install/agent.sh?token=%s&id=%s", base, urlEscape(tok), urlEscape(agentID))
 	// curl -k tolerates a self-signed nginx cert — the default for `make
 	// compose-up` deployments. Operator running through a real cert
 	// pays the same -k cost (no harm) and gets the convenience of a

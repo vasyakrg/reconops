@@ -54,6 +54,12 @@ type InstallConfig struct {
 	AgentGRPCEndpoint string
 	GRPCPort          int
 	Version           string
+	// ExternalURL is the public URL the install one-liner uses
+	// (scheme://host[:port]). Wins over the auto-derive from request
+	// host. Set when the operator UI path and the agent network path
+	// don't share the same hostname/port (e.g. orbstack autoroute on
+	// :443 vs nginx exposed on :8443).
+	ExternalURL string
 }
 
 // Enabled returns true when the operator filled in the install knobs.
