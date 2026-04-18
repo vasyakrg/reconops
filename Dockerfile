@@ -4,7 +4,7 @@
 # runtime targets (`hub-runtime`, `agent-runtime`) wrap them with a slim
 # alpine base. docker-compose picks the target per service via `target:`.
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.25
 
 # ── builder ──────────────────────────────────────────────────────────────────
 FROM golang:${GO_VERSION}-alpine AS build
