@@ -35,10 +35,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with:
+          # v2 of the linter is gated behind v7+ of the action.
           # Pin to whatever your local .golangci.yml was authored against.
-          # Bump alongside the rules.
           version: v2.5.0
 
   build:
