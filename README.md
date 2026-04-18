@@ -81,17 +81,17 @@ Set up the hub:
 sudo install -d -m 0750 -o $USER -g $USER /var/lib/recon
 mkdir -p deploy/dev/state/agent
 
-# Generate the admin password hash once.
-HASH=$(RECON_ADMIN_PASSWORD='strong-password' ./bin/recon-hub --mode gen-password-hash)
-
 # Issue a bootstrap token bound to one agent_id.
 TOKEN=$(./bin/recon-hub --config ./deploy/dev/hub.yaml --mode gen-token \
         --agent-id dev-agent-1 --token-ttl 1h)
 echo "$TOKEN" > deploy/dev/state/agent/bootstrap.token
 
-# Start the hub WITH the LLM (replace with your OpenRouter key).
+# Start the hub WITH the LLM (replace with your OpenRouter key). The hub
+# bcrypt-hashes RECON_ADMIN_PASSWORD at startup. For unattended setups
+# (CI, config management) you can pre-compute and pass RECON_ADMIN_PASSWORD_HASH
+# instead — it wins over the plaintext when both are set.
 RECON_ADMIN_USER=admin \
-RECON_ADMIN_PASSWORD_HASH="$HASH" \
+RECON_ADMIN_PASSWORD='strong-password' \
 RECON_LLM_API_KEY=sk-or-v1-... \
   ./bin/recon-hub --config ./deploy/dev/hub.yaml --mode serve
 ```
@@ -111,8 +111,9 @@ See [`deploy/docs/install.md`](deploy/docs/install.md) for the full
 runbook (systemd units, nginx in front, packaging tarballs). Highlights:
 
 - TLS terminated by nginx; hub stays on `127.0.0.1`.
-- `RECON_ADMIN_PASSWORD_HASH` + `RECON_LLM_API_KEY` live in
-  `/etc/recon/hub.env` (`mode 0600`, `recon:recon`); never in `hub.yaml`.
+- `RECON_ADMIN_PASSWORD` (or pre-hashed `RECON_ADMIN_PASSWORD_HASH`) +
+  `RECON_LLM_API_KEY` live in `/etc/recon/hub.env` (`mode 0600`,
+  `recon:recon`); never in `hub.yaml`.
 - `RECON_BEHIND_TLS_PROXY=true` so session cookies get the `Secure` flag
   even though hub itself speaks HTTP on the loopback.
 - `recon-hub --mode revoke --agent-id <id>` rejects the cert at next
@@ -154,7 +155,8 @@ Env (`/etc/recon/hub.env`):
 
 ```
 RECON_ADMIN_USER=admin
-RECON_ADMIN_PASSWORD_HASH=<output of recon-hub --mode gen-password-hash>
+RECON_ADMIN_PASSWORD=strong-password
+# or, for unattended setups: RECON_ADMIN_PASSWORD_HASH=<bcrypt hash>
 RECON_LLM_API_KEY=sk-or-v1-...
 RECON_BEHIND_TLS_PROXY=true
 ```

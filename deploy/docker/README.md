@@ -18,14 +18,17 @@ service is a convenience for local smoke testing the whole pipeline.
 cp .env.example .env
 ```
 
-Generate the bcrypt hash for the operator password and paste it into `.env`:
+Set `RECON_ADMIN_PASSWORD=strong-password` and `RECON_LLM_API_KEY=sk-or-v1-…`
+in `.env`. The hub bcrypt-hashes the plaintext at startup — no separate
+`gen-password-hash` step required.
+
+If you'd rather hand out a pre-computed hash (CI, config management, etc.),
+set `RECON_ADMIN_PASSWORD_HASH` instead — it wins over the plaintext when
+both are set:
 
 ```bash
 make compose-gen-hash PASSWORD='strong-password'
 ```
-
-Set `RECON_ADMIN_PASSWORD_HASH=<output>` and `RECON_LLM_API_KEY=sk-or-v1-…`
-in `.env`.
 
 > **Production note:** edit `deploy/docker/hub.yaml` *before* the first start to
 > add the hub's real DNS name(s) and IP(s) under `server.dns_names` /

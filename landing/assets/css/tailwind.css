@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background-color: #0a0b0d;
+    color: #e6e8eb;
+  }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: rgba(122, 162, 255, 0.35);
+  }
+}
+
+@layer components {
+  .container-x {
+    @apply mx-auto w-full max-w-container px-6 md:px-10;
+  }
+  .section {
+    @apply py-16 md:py-24;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-fg-1;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center rounded-lg px-5 py-2.5 text-sm font-medium transition;
+  }
+  .btn-primary {
+    @apply btn bg-accent-1 text-bg-0 hover:bg-[#8fb2ff];
+  }
+  .btn-ghost {
+    @apply btn border border-white/15 text-fg-0 hover:bg-white/5;
+  }
+  .card {
+    @apply rounded-2xl border border-white/10 bg-bg-1 p-6 transition duration-200;
+  }
+  .card-interactive {
+    @apply cursor-default;
+  }
+  .card-interactive:hover {
+    @apply -translate-y-0.5 border-accent-1/40 bg-bg-2;
+    box-shadow: 0 10px 30px -12px rgba(122, 162, 255, 0.25);
+  }
+  .heading-eyebrow {
+    @apply mb-3 text-xs uppercase tracking-[0.18em] text-fg-2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 100ms !important;
+    scroll-behavior: auto !important;
+  }
+}

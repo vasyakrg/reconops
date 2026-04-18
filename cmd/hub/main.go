@@ -173,8 +173,25 @@ func main() {
 		PasswordHash:   envOr("RECON_ADMIN_PASSWORD_HASH", ""),
 		BehindTLSProxy: envOr("RECON_BEHIND_TLS_PROXY", "") == "true",
 	}
+	// Convenience: if the operator passes the plaintext password directly,
+	// hash it here at startup so they don't have to run gen-password-hash
+	// as a separate step. RECON_ADMIN_PASSWORD_HASH still wins when both
+	// are set (useful for handing out a hash without ever exposing the
+	// plaintext to whoever maintains the env file). bcrypt cost is ~100ms,
+	// paid once at boot — fine.
+	if auth.PasswordHash == "" {
+		if pw := os.Getenv("RECON_ADMIN_PASSWORD"); pw != "" {
+			h, err := web.GenPasswordHash(pw)
+			if err != nil {
+				log.Error("hash RECON_ADMIN_PASSWORD", "err", err)
+				os.Exit(2)
+			}
+			auth.PasswordHash = h
+			log.Info("hashed RECON_ADMIN_PASSWORD on startup", "user", auth.Username)
+		}
+	}
 	if auth.Username != "" && auth.PasswordHash == "" {
-		log.Error("RECON_ADMIN_USER set but RECON_ADMIN_PASSWORD_HASH missing — refusing to start")
+		log.Error("RECON_ADMIN_USER set but neither RECON_ADMIN_PASSWORD nor RECON_ADMIN_PASSWORD_HASH — refusing to start")
 		os.Exit(2)
 	}
 	if !auth.Enabled() {
