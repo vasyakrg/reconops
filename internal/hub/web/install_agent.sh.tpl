@@ -39,34 +39,41 @@ fi
 install -d -m 0750 -o recon -g recon "$STATE_DIR"
 install -d -m 0755 "$CONF_DIR"
 
+# Re-running the installer is the operator's "clean reinstall" lever:
+# stop the service and wipe the prior identity so the new token + new
+# endpoint are honoured, instead of crash-looping with stale config.
+if systemctl is-enabled --quiet "${SVC_NAME}" 2>/dev/null; then
+  log "stopping prior recon-agent + wiping stale identity"
+  systemctl stop "${SVC_NAME}" 2>/dev/null || true
+  rm -f "${STATE_DIR}/agent.pem" "${STATE_DIR}/agent.key" "${STATE_DIR}/hub-ca.pem"
+fi
+
 # ── binary ──────────────────────────────────────────────────────────────────
 TARBALL="recon-agent-linux-${ARCH}.tar.gz"
 URL="${DOWNLOAD_BASE}/${TARBALL}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-if [[ ! -x "${PREFIX}/recon-agent" ]]; then
-  log "downloading $URL"
-  curl -fsSL "$URL" -o "$TMP/${TARBALL}"
-  tar -xzf "$TMP/${TARBALL}" -C "$TMP"
-  install -m 0755 "$TMP"/*/bin/recon-agent "${PREFIX}/recon-agent"
-else
-  log "binary already present at ${PREFIX}/recon-agent — skipping download"
-fi
+log "downloading $URL"
+curl -fsSL "$URL" -o "$TMP/${TARBALL}"
+tar -xzf "$TMP/${TARBALL}" -C "$TMP"
+install -m 0755 "$TMP"/*/bin/recon-agent "${PREFIX}/recon-agent"
 
 # ── bootstrap token ─────────────────────────────────────────────────────────
 TOK_FILE="${STATE_DIR}/bootstrap.token"
-if [[ ! -s "$TOK_FILE" && ! -s "${STATE_DIR}/agent.pem" ]]; then
-  log "writing bootstrap token (single-use)"
-  install -m 0600 -o recon -g recon /dev/null "$TOK_FILE"
-  printf '%s' "$TOKEN" > "$TOK_FILE"
-fi
+log "writing bootstrap token (single-use)"
+install -m 0600 -o recon -g recon /dev/null "$TOK_FILE"
+printf '%s' "$TOKEN" > "$TOK_FILE"
 
 # ── config ──────────────────────────────────────────────────────────────────
+# Always rewrite — operators rerun the installer to fix a misconfigured
+# endpoint / agent_id / version, so silently keeping the old config would
+# defeat the whole purpose. State files (cert, token) live in $STATE_DIR
+# and survive across reinstalls; the config is fully derived from the
+# install URL and is cheap to regenerate.
 CONF="${CONF_DIR}/agent.yaml"
-if [[ ! -f "$CONF" ]]; then
-  log "writing $CONF"
-  cat > "$CONF" <<EOF
+log "writing $CONF"
+cat > "$CONF" <<EOF
 hub:
   endpoint: "${HUB_ENDPOINT}"
   ca_cert:  ${STATE_DIR}/hub-ca.pem
@@ -87,10 +94,7 @@ runtime:
   default_timeout: 30s
   heartbeat_interval: 15s
 EOF
-  chmod 0644 "$CONF"
-else
-  log "config $CONF already present — skipping"
-fi
+chmod 0644 "$CONF"
 
 # ── systemd unit ────────────────────────────────────────────────────────────
 UNIT=/etc/systemd/system/${SVC_NAME}.service
