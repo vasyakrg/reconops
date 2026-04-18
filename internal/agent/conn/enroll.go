@@ -15,7 +15,9 @@ import (
 	"strings"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 
 	reconpb "github.com/vasyakrg/recon/internal/proto"
 )
@@ -76,6 +78,14 @@ func Enroll(ctx context.Context, cfg *Config) error {
 		CsrPem:         csrPEM,
 	})
 	if err != nil {
+		// PermissionDenied here means the token is invalid / expired /
+		// consumed / bound to a different agent — none of which are
+		// fixable by retrying the same token. Delete the on-disk copy
+		// so the next agent start short-circuits via the no-token guard
+		// above instead of hammering the hub forever.
+		if status.Code(err) == codes.PermissionDenied && cfg.Hub.BootstrapToken != "" {
+			_ = os.Remove(cfg.Hub.BootstrapToken)
+		}
 		return fmt.Errorf("enroll RPC: %w", err)
 	}
 

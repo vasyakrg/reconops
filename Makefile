@@ -141,9 +141,12 @@ compose-gen-token: ## Issue a bootstrap token; AGENT_ID=… required, TTL=24h op
 	  --agent-id "$(AGENT_ID)" --token-ttl "$${TTL:-24h}"
 
 .PHONY: compose-bootstrap-agent
-compose-bootstrap-agent: ## (Re-)bootstrap the local-compose-agent: stop it, wipe its cert, issue a fresh token, start it
+compose-bootstrap-agent: ## (Re-)bootstrap the local-compose-agent: stop it, wipe state, revoke prior identity on the hub, issue a fresh token, start it
 	@$(COMPOSE) ps hub | grep -q "Up" || (echo "hub is not running — make compose-up first" && exit 1)
 	@$(COMPOSE) --profile with-agent stop agent >/dev/null 2>&1 || true
+	@$(COMPOSE) exec -T hub /usr/local/bin/recon-hub \
+	  --config /etc/recon/hub.yaml --mode revoke \
+	  --agent-id local-compose-agent --revoke-reason "compose-bootstrap-agent rerun" >/dev/null 2>&1 || true
 	@token=$$($(COMPOSE) exec -T hub /usr/local/bin/recon-hub \
 	  --config /etc/recon/hub.yaml --mode gen-token \
 	  --agent-id local-compose-agent --token-ttl 1h 2>/dev/null | tail -1); \
@@ -151,5 +154,5 @@ compose-bootstrap-agent: ## (Re-)bootstrap the local-compose-agent: stop it, wip
 	echo "$$token" | $(COMPOSE) --profile with-agent run --rm --no-deps -T --entrypoint /bin/sh agent \
 	  -c 'rm -f /var/lib/recon-agent/agent.pem /var/lib/recon-agent/agent.key /var/lib/recon-agent/hub-ca.pem /var/lib/recon-agent/bootstrap.token; \
 	      cat > /var/lib/recon-agent/bootstrap.token && chmod 0600 /var/lib/recon-agent/bootstrap.token' && \
-	echo "wiped stale cert + seeded fresh token; bringing the agent up" && \
+	echo "wiped stale cert + revoked prior identity + seeded fresh token; bringing the agent up" && \
 	$(COMPOSE) --profile with-agent up -d agent
