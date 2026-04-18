@@ -1,144 +1,244 @@
 {{define "investigation_detail"}}
-<h2>Investigation <code>{{.Inv.ID}}</code></h2>
-<p class="small">
-  status <span class="badge badge-{{if eq .Inv.Status "active"}}running{{else if eq .Inv.Status "done"}}ok{{else if eq .Inv.Status "aborted"}}error{{else}}info{{end}}">{{.Inv.Status}}</span>
-  · model <code>{{.Inv.Model}}</code>
-  · steps {{.Inv.TotalToolCalls}}
-  · tokens {{.Inv.TotalPromptTokens}} prompt + {{.Inv.TotalCompletionTokens}} completion
-  · created {{.Inv.CreatedAt.Format "2006-01-02 15:04:05"}} UTC
-</p>
-
-<h3>Goal</h3>
-<blockquote>{{.Inv.Goal}}</blockquote>
-
-<h3>Budgets</h3>
-<div class="small">
-  <div>Steps: {{.Inv.TotalToolCalls}} / {{.MaxSteps}} —
-    <progress value="{{.StepsPct}}" max="100" style="width:200px"></progress> {{.StepsPct}}%
+<header class="pg-hd" style="gap:16px">
+  <div style="display:flex;align-items:center;gap:14px;min-width:0;flex:1;flex-wrap:wrap">
+    <div class="crumbs">
+      <a href="/investigations">Investigations</a>
+      <span class="sep">/</span>
+      <span class="mono" style="color:var(--fg-2)">{{shortID .Inv.ID 22}}</span>
+    </div>
+    {{if eq .Inv.Status "active"}}<span class="badge accent"><span class="dot info pulse" style="width:6px;height:6px"></span>active</span>
+    {{else if eq .Inv.Status "waiting"}}<span class="badge pending"><span class="dot pending" style="width:6px;height:6px"></span>waiting</span>
+    {{else if eq .Inv.Status "done"}}<span class="badge ok"><span class="dot ok" style="width:6px;height:6px"></span>done</span>
+    {{else if eq .Inv.Status "aborted"}}<span class="badge err"><span class="dot err" style="width:6px;height:6px"></span>aborted</span>
+    {{else}}<span class="badge"><span class="dot" style="width:6px;height:6px"></span>{{.Inv.Status}}</span>{{end}}
+    {{if .Inv.Model}}<span class="chip"><span class="k">model</span><span class="v mono">{{.Inv.Model}}</span></span>{{end}}
+    {{if eq .Inv.Status "active"}}<span id="live-pulse" class="live-pulse"><span class="dot ok pulse" style="width:6px;height:6px"></span>live · SSE</span>{{end}}
   </div>
-  <div>Tokens: {{.UsedTokens}} / {{.MaxTokens}} —
-    <progress value="{{.TokensPct}}" max="100" style="width:200px"></progress> {{.TokensPct}}%
+  <div style="display:flex;align-items:center;gap:18px">
+    <div class="budget" title="Steps used / budget">
+      <span class="lbl">steps</span>
+      <span class="mono" style="color:var(--fg-0)">{{.Inv.TotalToolCalls}}/{{.MaxSteps}}</span>
+      <div class="pbar {{if ge .StepsPct 90}}err{{else if ge .StepsPct 70}}warn{{end}}"><span style="width:{{.StepsPct}}%"></span></div>
+    </div>
+    <div class="budget" title="Tokens used / budget">
+      <span class="lbl">tokens</span>
+      <span class="mono" style="color:var(--fg-0)">{{compactNum .UsedTokens}}/{{compactNum .MaxTokens}}</span>
+      <div class="pbar {{if ge .TokensPct 90}}err{{else if ge .TokensPct 70}}warn{{end}}"><span style="width:{{.TokensPct}}%"></span></div>
+    </div>
+    <a class="btn sm ghost" href="/investigations/export/{{.Inv.ID}}">Export .md</a>
   </div>
-</div>
+</header>
 
-{{if .Pending}}
-<h3>Pending tool call — your decision</h3>
-<div style="border:1px solid #ddd; padding:8px; background:#fffceb;">
-  <p><strong>Tool:</strong> <code>{{.Pending.Tool}}</code></p>
-  {{if .Pending.Rationale}}<p><em>{{.Pending.Rationale}}</em></p>{{end}}
-  <form method="post" action="/investigations/decide">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-    <details open><summary>Input (edit JSON below to change params)</summary>
-      <textarea name="new_input_json" rows="6" cols="80" style="font-family:monospace;">{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</textarea>
-    </details>
-    <p>
-      <button type="submit" name="decision" value="approve">Approve</button>
-      <button type="submit" name="decision" value="edit">Approve with edits</button>
-      <button type="submit" name="decision" value="skip">Skip</button>
-      <button type="submit" name="decision" value="end">End investigation</button>
-    </p>
-  </form>
-</div>
-{{else if eq .Inv.Status "active"}}
-<p class="small">⏳ Waiting for the model — refresh in a moment.</p>
-{{end}}
+<!-- Goal block -->
+<section style="padding:18px 24px 14px;border-bottom:1px solid var(--border);background:var(--bg-0)">
+  <div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Goal</div>
+  <div class="t-lg" style="color:var(--fg-0);font-weight:500;max-width:90ch">{{.Inv.Goal}}</div>
+  <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:var(--fg-2)" class="mono">
+    <span>created <span style="color:var(--fg-1)">{{.Inv.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</span> by <span style="color:var(--fg-1)">{{.Inv.CreatedBy}}</span></span>
+    <span>· {{sinceUTC .Inv.CreatedAt}}</span>
+    <span>· <span style="color:var(--fg-1)">{{len .Findings}} finding{{if ne (len .Findings) 1}}s{{end}}</span></span>
+  </div>
+</section>
 
-{{if ne .Inv.Status "done"}}
-<details>
-  <summary>Inject operator hypothesis (overrides model's next step)</summary>
-  <form method="post" action="/investigations/hypothesis" style="margin-top:6px;">
-    <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-    <label class="small">Claim (required):</label><br>
-    <textarea name="claim" rows="2" cols="80" required placeholder="possibly the kube-apiserver cert is expired"></textarea><br>
-    <label class="small">Expected evidence:</label><br>
-    <input type="text" name="expected" size="80" placeholder="check expiration date of /etc/kubernetes/pki/apiserver.crt"><br>
-    <label class="small">Instruction:</label><br>
-    <input type="text" name="instruction" size="80" placeholder="verify before continuing other branches"><br>
-    <button type="submit">Inject</button>
-  </form>
-</details>
-{{end}}
+<section class="pg-body" style="display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:18px;align-items:flex-start">
 
-<h3>Findings</h3>
-{{if .Findings}}
-<table>
-  <thead><tr><th></th><th>Severity</th><th>Code</th><th>Message</th><th>Evidence</th><th>Actions</th></tr></thead>
-  <tbody>
-  {{range .Findings}}
-    <tr {{if .Ignored}}style="opacity:.4"{{end}}>
-      <td>{{if .Pinned}}📌{{end}}{{if .Ignored}}🚫{{end}}</td>
-      <td><span class="badge badge-{{if eq .Severity "error"}}error{{else if eq .Severity "warn"}}pending{{else}}info{{end}}">{{.Severity}}</span></td>
-      <td><code>{{.Code}}</code></td>
-      <td>{{.Message}}</td>
-      <td><details><summary>refs</summary><pre>{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre></details></td>
-      <td class="small">
-        <form class="inline" method="post" action="/findings/{{.ID}}/{{if .Pinned}}unpin{{else}}pin{{end}}">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
-          <button type="submit">{{if .Pinned}}unpin{{else}}pin{{end}}</button>
-        </form>
-        <form class="inline" method="post" action="/findings/{{.ID}}/{{if .Ignored}}unignore{{else}}ignore{{end}}">
-          <input type="hidden" name="csrf" value="{{$.CSRF}}">
-          <button type="submit">{{if .Ignored}}restore{{else}}ignore{{end}}</button>
-        </form>
-      </td>
-    </tr>
-  {{end}}
-  </tbody>
-</table>
-{{else}}
-<p class="empty">No findings yet.</p>
-{{end}}
+  <!-- ════════════ COL 1: PENDING + TIMELINE ════════════ -->
+  <div class="panel" style="min-width:0">
+    <div class="panel-hd">
+      <div class="hd-left">
+        <span>Actions timeline</span>
+        <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .ToolCalls}} step{{if ne (len .ToolCalls) 1}}s{{end}}{{if .Pending}} · 1 pending{{end}}</span>
+      </div>
+    </div>
 
-<h3>Tool-call timeline</h3>
-{{if .ToolCalls}}
-<table>
-  <thead><tr><th>#</th><th>Tool</th><th>Status</th><th>Rationale</th><th>Result</th></tr></thead>
-  <tbody>
-  {{range .ToolCalls}}
-    <tr>
-      <td>{{.Seq}}</td>
-      <td><code>{{.Tool}}</code></td>
-      <td><span class="badge badge-{{if eq .Status "executed"}}ok{{else if eq .Status "pending"}}pending{{else if eq .Status "approved"}}running{{else}}info{{end}}">{{.Status}}</span></td>
-      <td class="small">{{.Rationale}}</td>
-      <td>
-        <details><summary>Input</summary><pre>{{prettyJSON (printf "%s" .InputJSON | bytesOf)}}</pre></details>
-        {{if .ResultJSON.Valid}}
-          <details><summary>Result</summary><pre>{{prettyJSON (printf "%s" .ResultJSON.String | bytesOf)}}</pre></details>
+    {{if .Pending}}
+    <div style="padding:10px 12px 4px;background:var(--bg-0)">
+      <form method="post" action="/investigations/decide" class="pending" data-variant="framed">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+        <input type="hidden" name="tool_call_id" value="{{.Pending.ID}}">
+        <div class="pending-hd">
+          <div class="title">
+            <span class="lbl">◇ Pending approval</span>
+            <span>{{.Pending.Tool}}</span>
+            <span class="muted mono" style="font-size:11px">· step {{.Pending.Seq}}</span>
+          </div>
+          <div class="meta-right">
+            <span class="mono">{{shortID .Pending.ID 12}}</span>
+          </div>
+        </div>
+        <div class="pending-body">
+          {{if .Pending.Rationale}}<div class="pending-rationale">{{.Pending.Rationale}}</div>{{end}}
+          <div class="t-xs" style="color:var(--fg-3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:5px;font-weight:600">Input</div>
+          <textarea name="new_input_json" class="pending-input" style="width:100%;min-height:90px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:12px">{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</textarea>
+          <div class="pending-actions" style="margin-top:12px">
+            <button class="btn primary" type="submit" name="decision" value="approve">Approve</button>
+            <button class="btn" type="submit" name="decision" value="edit">Edit & Approve</button>
+            <button class="btn ghost" type="submit" name="decision" value="skip">Skip</button>
+            <button class="btn danger-ghost" type="submit" name="decision" value="end">End investigation</button>
+          </div>
+        </div>
+      </form>
+    </div>
+    {{else if eq .Inv.Status "active"}}
+    <div style="padding:14px 14px 10px;color:var(--fg-2);font-size:12px;font-style:italic">⏳ Waiting for the model — page will reload when the next step appears.</div>
+    {{end}}
+
+    <!-- Timeline rows -->
+    <div class="timeline">
+    {{range .ToolCalls}}
+      {{$st := .Status}}
+      {{$tlSt := "executed"}}
+      {{if eq $st "pending"}}{{$tlSt = "running"}}{{end}}
+      {{if or (eq $st "failed") (eq $st "aborted")}}{{$tlSt = "error"}}{{end}}
+      {{if eq $st "skipped"}}{{$tlSt = "skipped"}}{{end}}
+      <details class="tl-row" data-status="{{$tlSt}}" style="display:block;cursor:pointer">
+        <summary style="display:grid;grid-template-columns:36px 28px 200px 1fr auto;align-items:center;gap:10px;padding:7px 12px;border-left:2px solid transparent;border-bottom:1px solid var(--border);font-size:12.5px;list-style:none;cursor:pointer">
+          <span style="color:var(--fg-3);font-family:var(--font-mono);font-size:11px;text-align:right">{{printf "%02d" .Seq}}</span>
+          <span style="display:flex;justify-content:center">
+            <span class="dot {{if eq $st "executed"}}ok{{else if eq $st "pending"}}pending pulse{{else if eq $st "skipped"}}offline{{else if or (eq $st "failed") (eq $st "aborted")}}err{{else}}info{{end}}"></span>
+          </span>
+          <span style="font-family:var(--font-mono);color:var(--fg-0);display:flex;align-items:center;gap:8px">
+            {{.Tool}}
+            {{if .TaskID.Valid}}<span class="dim" style="font-size:10.5px">{{shortID .TaskID.String 10}}</span>{{end}}
+          </span>
+          <span style="color:var(--fg-1);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{if .Rationale}}{{.Rationale}}{{else}}<span class="dim">no rationale</span>{{end}}</span>
+          <span style="color:var(--fg-2);font-family:var(--font-mono);font-size:11px">{{.Status}}</span>
+        </summary>
+        <div style="padding:10px 14px 14px 50px;background:var(--bg-2);border-bottom:1px solid var(--border)">
+          {{if .Rationale}}
+          <div style="margin-bottom:10px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Rationale</div>
+            <div style="font-style:italic;color:var(--fg-1);font-size:12.5px;line-height:1.55;max-width:780px">{{.Rationale}}</div>
+          </div>
+          {{end}}
+          <div style="margin-bottom:10px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Input</div>
+            <pre style="font-size:11.5px;margin:0">{{prettyJSON (printf "%s" .InputJSON | bytesOf)}}</pre>
+          </div>
+          {{if .ResultJSON.Valid}}
+          <div>
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Result</div>
+            <pre style="font-size:11.5px;margin:0;max-height:260px;overflow:auto">{{prettyJSON (printf "%s" .ResultJSON.String | bytesOf)}}</pre>
+          </div>
+          {{end}}
+        </div>
+      </details>
+    {{else}}
+      <div class="empty" style="padding:18px">No tool calls recorded yet.</div>
+    {{end}}
+    </div>
+  </div>
+
+  <!-- ════════════ COL 2: FINDINGS + HYPOTHESIS + CONTEXT ════════════ -->
+  <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+
+    <div class="panel">
+      <div class="panel-hd">
+        <div class="hd-left">
+          <span>Findings</span>
+          <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .Findings}}</span>
+        </div>
+      </div>
+      {{if .Findings}}
+      <div>
+        {{range .Findings}}
+        <div class="finding {{if .Pinned}}pinned{{end}} {{if .Ignored}}ignored{{end}}" id="{{.ID}}">
+          <div class="f-mark">{{if .Pinned}}📌{{end}}{{if .Ignored}}🚫{{end}}</div>
+          <div class="f-body">
+            <div class="f-row">
+              {{if eq .Severity "critical"}}<span class="badge critical">critical</span>
+              {{else if eq .Severity "error"}}<span class="badge err">error</span>
+              {{else if eq .Severity "warn"}}<span class="badge warn">warn</span>
+              {{else}}<span class="badge info">info</span>{{end}}
+              <span class="f-code">{{.Code}}</span>
+              <span class="muted" style="font-family:var(--font-mono);font-size:10.5px;margin-left:auto">{{.CreatedAt.UTC.Format "15:04"}}</span>
+            </div>
+            <div class="f-msg">{{.Message}}</div>
+            {{if .EvidenceJSON}}
+            <details class="f-ev">
+              <summary>evidence</summary>
+              <pre style="margin-top:4px;font-size:10.5px">{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre>
+            </details>
+            {{end}}
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <form method="post" action="/findings/{{.ID}}/{{if .Pinned}}unpin{{else}}pin{{end}}" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn xs ghost" type="submit">{{if .Pinned}}unpin{{else}}pin{{end}}</button>
+              </form>
+              <form method="post" action="/findings/{{.ID}}/{{if .Ignored}}unignore{{else}}ignore{{end}}" style="display:inline">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn xs ghost" type="submit">{{if .Ignored}}restore{{else}}ignore{{end}}</button>
+              </form>
+            </div>
+          </div>
+        </div>
         {{end}}
-      </td>
-    </tr>
-  {{end}}
-  </tbody>
-</table>
-{{else}}
-<p class="empty">No tool calls recorded yet.</p>
-{{end}}
+      </div>
+      {{else}}
+      <div class="empty" style="padding:18px 14px">No findings yet.</div>
+      {{end}}
+    </div>
 
-{{if .Inv.SummaryJSON.Valid}}
-<h3>Summary (mark_done)</h3>
-<pre>{{prettyJSON (printf "%s" .Inv.SummaryJSON.String | bytesOf)}}</pre>
-{{end}}
+    {{if and (ne .Inv.Status "done") (ne .Inv.Status "aborted")}}
+    <form method="post" action="/investigations/hypothesis" class="hyp-card">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+      <div class="hyp-hd">⚠ Direct the model</div>
+      <div class="muted t-xs" style="margin-bottom:10px;line-height:1.5">
+        Replaces the current pending step. Claude must verify the claim before continuing.
+      </div>
+      <label>Claim (required)</label>
+      <textarea name="claim" rows="2" required placeholder="kube-controller-manager stopped auto-renewing certs"></textarea>
+      <label>Expected evidence</label>
+      <input type="text" name="expected" placeholder="check expiration date of /etc/kubernetes/pki/apiserver.crt">
+      <label>Instruction</label>
+      <input type="text" name="instruction" placeholder="verify before continuing other branches">
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn sm" type="submit" style="background:var(--pending);color:#0a0b0d;border-color:var(--pending);font-weight:600">Inject</button>
+      </div>
+    </form>
+    {{end}}
 
-<p class="small">
-  <a href="/investigations/{{.Inv.ID}}">refresh</a> ·
-  <a href="/investigations/export/{{.Inv.ID}}">export.md</a>
-  {{if eq .Inv.Status "active"}}· <em>auto-refreshing on state changes</em>{{end}}
-</p>
+    <div class="panel">
+      <div class="panel-hd"><span>Context</span></div>
+      <div style="padding:10px 14px;display:flex;flex-direction:column;gap:6px;font-size:12px;font-family:var(--font-mono)">
+        <div style="display:flex;justify-content:space-between"><span class="muted">tool calls</span><span style="color:var(--fg-0)">{{len .ToolCalls}}</span></div>
+        <div style="display:flex;justify-content:space-between"><span class="muted">findings</span><span style="color:var(--fg-0)">{{len .Findings}}</span></div>
+        <div style="display:flex;justify-content:space-between"><span class="muted">tokens used</span><span style="color:var(--fg-0)">{{compactNum .UsedTokens}}</span></div>
+        <div style="display:flex;justify-content:space-between;padding-top:6px;border-top:1px dashed var(--border);margin-top:2px">
+          <span class="muted">compaction</span><span style="color:var(--fg-2)">{{if .Inv.CompactionTokens}}{{compactNum .Inv.CompactionTokens}} tok{{else}}none{{end}}</span>
+        </div>
+      </div>
+    </div>
+
+    {{if .Inv.SummaryJSON.Valid}}
+    <div class="panel">
+      <div class="panel-hd"><span>Summary (mark_done)</span></div>
+      <div style="padding:10px 14px">
+        <pre style="margin:0;font-size:11.5px;max-height:400px;overflow:auto">{{prettyJSON (printf "%s" .Inv.SummaryJSON.String | bytesOf)}}</pre>
+      </div>
+    </div>
+    {{end}}
+
+  </div>
+
+</section>
 
 {{if eq .Inv.Status "active"}}
 <script>
 (function() {
   const es = new EventSource("/investigations/events/{{.Inv.ID}}");
-  // Baseline computed server-side at render time — closes the race where
-  // the page is rendered AFTER the first state-change but BEFORE the SSE
-  // connection is established.
   const baseline = {{.InitSnap | printf "%q"}};
   es.addEventListener("state-change", (e) => {
     if (e.data !== baseline) { es.close(); window.location.reload(); }
   });
   es.addEventListener("bye", () => es.close());
+  // Live-pulse tick on every event so the operator sees the connection is alive
+  es.onmessage = () => {
+    const lp = document.getElementById('live-pulse');
+    if (lp) { lp.classList.add('tick'); setTimeout(() => lp.classList.remove('tick'), 400); }
+  };
 })();
 </script>
 {{end}}
