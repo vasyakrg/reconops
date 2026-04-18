@@ -37,7 +37,7 @@ install:
   # but agents must reach the published nginx port https://192.168.8.121:8443.
   # Empty falls back to deriving from the request, which only works when
   # the same URL is reachable from both the browser and the agent.
-  # external_url: https://192.168.8.121:8443
+  external_url: https://192.168.8.121:8443
   # "auto" derives host:port from the install URL's request hostname
   # (honours nginx X-Forwarded-Host) plus grpc_port. Pin to an explicit
   # value (e.g. "hub.example.com:9443") if agents and the operator
