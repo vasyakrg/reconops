@@ -93,9 +93,44 @@ func (l *Loop) spawn(id string) {
 	go l.advance(context.Background(), id)
 }
 
+// Resume re-spawns advance() for every investigation still marked active.
+// Called once at hub startup so investigations whose previous owning loop
+// died with the process do not hang forever waiting for an operator click
+// (review C4). Investigations with a 'pending' tool_call sit idle until
+// the operator decides — same behaviour as before the restart.
+func (l *Loop) Resume(ctx context.Context) error {
+	if l == nil || l.llm == nil {
+		return nil
+	}
+	invs, err := l.store.ListInvestigations(ctx, 1000)
+	if err != nil {
+		return err
+	}
+	resumed := 0
+	for _, inv := range invs {
+		if inv.Status != "active" {
+			continue
+		}
+		l.log.Info("resuming investigation", "id", inv.ID, "tool_calls", inv.TotalToolCalls)
+		l.spawn(inv.ID)
+		resumed++
+	}
+	if resumed > 0 {
+		l.log.Info("investigator resume complete", "count", resumed)
+	}
+	return nil
+}
+
 // Decide records an operator decision on a pending tool call and resumes
-// the loop. Decision: "approve" | "skip" | "end".
+// the loop. Decision: "approve" | "skip" | "end" | "edit" (with newInputJSON).
 func (l *Loop) Decide(ctx context.Context, investigationID, decision, decidedBy string) error {
+	return l.DecideWithEdit(ctx, investigationID, decision, "", decidedBy)
+}
+
+// DecideWithEdit is the full form. For decision="edit", newInputJSON replaces
+// the pending tool_call's input_json before promoting to 'edited' (semantically
+// approved).
+func (l *Loop) DecideWithEdit(ctx context.Context, investigationID, decision, newInputJSON, decidedBy string) error {
 	pending, err := l.store.PendingToolCall(ctx, investigationID)
 	if err != nil {
 		return err
@@ -105,7 +140,29 @@ func (l *Loop) Decide(ctx context.Context, investigationID, decision, decidedBy 
 	}
 	switch decision {
 	case "approve":
+		// If this is a broad-selector batch awaiting confirmation, mark the
+		// rationale so executeApproved skips the gate the second time.
+		if needsBroadConfirm(pending) {
+			_ = l.store.SetToolCallRationale(ctx, pending.ID,
+				pending.Rationale+" [BROAD-SELECTOR-CONFIRMED]")
+		}
 		if err := l.store.UpdateToolCall(ctx, pending.ID, "approved", decidedBy, "", ""); err != nil {
+			return err
+		}
+	case "edit":
+		if newInputJSON == "" {
+			return errors.New("edit requires new_input_json")
+		}
+		// Validate JSON shape — handlers will refuse malformed input later
+		// but failing here gives a clearer 400 to the operator.
+		var probe any
+		if err := json.Unmarshal([]byte(newInputJSON), &probe); err != nil {
+			return fmt.Errorf("new_input_json invalid: %w", err)
+		}
+		if err := l.store.SetToolCallInput(ctx, pending.ID, newInputJSON); err != nil {
+			return err
+		}
+		if err := l.store.UpdateToolCall(ctx, pending.ID, "edited", decidedBy, "", ""); err != nil {
 			return err
 		}
 	case "skip":
@@ -131,6 +188,59 @@ func (l *Loop) Decide(ctx context.Context, investigationID, decision, decidedBy 
 	}
 	l.spawn(investigationID)
 	return nil
+}
+
+// InjectHypothesis discards the current pending tool_call (if any) and
+// appends an OPERATOR HYPOTHESIS user message; the loop is then resumed.
+// PROJECT.md §7.5: hypothesis is a directive, not a hint, and must
+// REPLACE the model's current plan.
+func (l *Loop) InjectHypothesis(ctx context.Context, investigationID, claim, expected, instruction, decidedBy string) error {
+	claim = strings.TrimSpace(claim)
+	if claim == "" {
+		return errors.New("claim required")
+	}
+	if l == nil || l.llm == nil {
+		return errors.New("LLM disabled")
+	}
+	pending, err := l.store.PendingToolCall(ctx, investigationID)
+	if err != nil {
+		return err
+	}
+	if pending != nil {
+		// Discard whatever the model proposed; the hypothesis supersedes it.
+		_ = l.store.UpdateToolCall(ctx, pending.ID, "aborted", decidedBy, "",
+			`{"ok":false,"error":"superseded by operator hypothesis"}`)
+	}
+	body := "OPERATOR HYPOTHESIS [priority: HIGH]\nClaim: " + claim
+	if expected = strings.TrimSpace(expected); expected != "" {
+		body += "\nExpected evidence: " + expected
+	}
+	if instruction = strings.TrimSpace(instruction); instruction != "" {
+		body += "\nInstruction: " + instruction
+	}
+	if _, err := l.store.AppendMessage(ctx, store.Message{
+		InvestigationID: investigationID, Role: "user", Content: body,
+	}); err != nil {
+		return err
+	}
+	l.spawn(investigationID)
+	return nil
+}
+
+// InjectIgnoreNote appends a system_note announcing that a finding has been
+// marked IGNORED. The loop's prompt assembly turns system_note into a
+// user-message prefixed with "SYSTEM NOTE:" — see callLLM. Used by the
+// /findings/{id}/ignore endpoint (week 4 §3 of plan).
+func (l *Loop) InjectIgnoreNote(ctx context.Context, investigationID, findingCode, findingMessage string) error {
+	if l == nil {
+		return nil
+	}
+	body := "OPERATOR ACTIONS (since last turn):\n- Finding [" + findingCode +
+		"] \"" + findingMessage + "\" marked IGNORED. Do not investigate this direction further."
+	_, err := l.store.AppendMessage(ctx, store.Message{
+		InvestigationID: investigationID, Role: "system_note", Content: body,
+	})
+	return err
 }
 
 // advance runs one LLM step. It is serialized per investigation via
@@ -353,6 +463,18 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 			}
 		}
 	case "collect_batch":
+		// (week 4 §9) broad-selector confirmation: if the batch hits more
+		// than the threshold AND this call has not been re-confirmed yet,
+		// flip back to pending with a synthetic note. The note's presence
+		// in tool_calls.rationale tells the UI to render a "broad — confirm"
+		// warning instead of a normal pending card. After the second
+		// approve, status flips to 'approved' (not 'edited'); we detect
+		// that by looking at decided_by — the second pass has the marker.
+		if needsBroadConfirm(tc) {
+			_ = l.store.UpdateToolCall(ctx, tc.ID, "pending", "",
+				"BROAD-SELECTOR: more than "+broadSelectorMarker+" hosts; re-approve to proceed", "")
+			return nil
+		}
 		exec, err := PrepareCollectBatch(ctx, env, tc.InputJSON)
 		if err != nil {
 			result = errResult(err)
@@ -397,7 +519,7 @@ func (l *Loop) lastApproved(ctx context.Context, investigationID string) (*store
 		return nil, err
 	}
 	for i := len(tcs) - 1; i >= 0; i-- {
-		if tcs[i].Status == "approved" {
+		if tcs[i].Status == "approved" || tcs[i].Status == "edited" {
 			tc := tcs[i]
 			return &tc, nil
 		}
@@ -464,6 +586,30 @@ func taskTerminal(ctx context.Context, st *store.Store, id string) (bool, error)
 func nextSeq(ctx context.Context, st *store.Store, investigationID string) int {
 	tcs, _ := st.ListToolCalls(ctx, investigationID)
 	return len(tcs) + 1
+}
+
+const broadSelectorMarker = "5"
+const broadSelectorThreshold = 5
+
+// needsBroadConfirm returns true when a collect_batch call hits more hosts
+// than the operator should approve in one click and has not yet been
+// re-approved. After re-approval the rationale already contains the marker;
+// the second pass through executeApproved sees it via tc.Rationale and
+// proceeds.
+func needsBroadConfirm(tc *store.ToolCallRow) bool {
+	if tc.Tool != "collect_batch" {
+		return false
+	}
+	if strings.Contains(tc.Rationale, "BROAD-SELECTOR-CONFIRMED") {
+		return false
+	}
+	var args struct {
+		HostIDs []string `json:"host_ids"`
+	}
+	if err := json.Unmarshal([]byte(tc.InputJSON), &args); err != nil {
+		return false
+	}
+	return len(args.HostIDs) > broadSelectorThreshold
 }
 
 func newInvestigationID() string {

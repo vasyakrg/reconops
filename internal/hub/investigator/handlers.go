@@ -589,6 +589,14 @@ func handleAddFinding(ctx context.Context, env HandlerEnv, argsJSON string) Tool
 	default:
 		return errResult(fmt.Errorf("severity must be info|warn|error"))
 	}
+	// (H4) The model can hallucinate task_ids. Verify each one resolves to
+	// a real task in this hub — without this, findings memo grows full of
+	// references to nonexistent tasks and the audit chain breaks.
+	for _, ref := range a.EvidenceRefs {
+		if _, err := env.Store.GetTask(ctx, ref); err != nil {
+			return errResult(fmt.Errorf("evidence_ref %q: %w", ref, err))
+		}
+	}
 	id := newFindingID()
 	body, _ := json.Marshal(map[string]any{"task_ids": a.EvidenceRefs})
 	if err := env.Store.AddFinding(ctx, store.Finding{

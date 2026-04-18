@@ -10,14 +10,34 @@ import (
 )
 
 func TestNewRequiresKey(t *testing.T) {
-	if _, err := New(Options{BaseURL: "http://x", Model: "m"}); err == nil {
+	if _, err := New(Options{BaseURL: "https://x", Model: "m"}); err == nil {
 		t.Fatal("expected error for missing key")
 	}
 	if _, err := New(Options{APIKey: "k", Model: "m"}); err == nil {
 		t.Fatal("expected error for missing base_url")
 	}
-	if _, err := New(Options{APIKey: "k", BaseURL: "http://x"}); err == nil {
+	if _, err := New(Options{APIKey: "k", BaseURL: "https://x"}); err == nil {
 		t.Fatal("expected error for missing model")
+	}
+}
+
+func TestNewRefusesPlaintextHTTP(t *testing.T) {
+	// (H2) Plaintext HTTP to a public host must be refused — bearer token
+	// would leak.
+	_, err := New(Options{APIKey: "k", BaseURL: "http://openrouter.ai/api/v1", Model: "m"})
+	if err == nil {
+		t.Fatal("expected error for http:// public host")
+	}
+	// Loopback http is allowed (local LLM gateway is the typical case).
+	for _, u := range []string{
+		"http://127.0.0.1:8080/v1",
+		"http://localhost:8080/v1",
+		"http://[::1]:8080/v1",
+		"https://openrouter.ai/api/v1",
+	} {
+		if _, err := New(Options{APIKey: "k", BaseURL: u, Model: "m"}); err != nil {
+			t.Errorf("expected allow %q: %v", u, err)
+		}
 	}
 }
 

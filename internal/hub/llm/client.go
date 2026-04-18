@@ -17,7 +17,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -54,6 +56,12 @@ func New(opt Options) (*Client, error) {
 	}
 	if opt.Model == "" {
 		return nil, errors.New("llm: model is empty")
+	}
+	// (H2) Refuse to ship a bearer token over plaintext HTTP unless the
+	// endpoint is explicitly loopback (operator running a local LLM gateway
+	// is the only legitimate case).
+	if !isHTTPSAllowed(opt.BaseURL) {
+		return nil, fmt.Errorf("llm: base_url %q is plaintext HTTP and not loopback — bearer token would leak", opt.BaseURL)
 	}
 	to := opt.Timeout
 	if to <= 0 {
@@ -178,9 +186,16 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	// (H3) Read up to maxResponseBytes+1 so we can distinguish "exactly at
+	// the cap" from "more was waiting" — silent truncation would surface
+	// downstream as garbled JSON, hard to diagnose.
+	const maxResponseBytes = 8 * 1024 * 1024
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if int64(len(respBody)) > maxResponseBytes {
+		return nil, fmt.Errorf("llm response exceeds %d bytes — provider returned more than the safety cap", maxResponseBytes)
 	}
 	if resp.StatusCode/100 != 2 {
 		// Strip our own bearer token + any obvious provider key prefixes
@@ -204,6 +219,30 @@ func snippet(b []byte, max int) string {
 		return string(b)
 	}
 	return string(b[:max]) + "…"
+}
+
+// isHTTPSAllowed returns true for https URLs and for plaintext http URLs
+// pointing at loopback (127.0.0.0/8, ::1, localhost). Anything else is
+// rejected because the bearer token must not transit cleartext.
+func isHTTPSAllowed(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
 }
 
 // keyPattern matches common provider key shapes: sk-or-..., sk-ant-...,

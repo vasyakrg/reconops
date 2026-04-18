@@ -38,6 +38,10 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 		"prettyJSON": prettyJSON,
 		"truncate":   truncate,
 		"bytesOf":    func(s string) []byte { return []byte(s) },
+		"mapJSON": func(m map[string]any) string {
+			b, _ := json.MarshalIndent(m, "", "  ")
+			return string(b)
+		},
 	}).ParseFS(tplFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -62,6 +66,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/investigations/", s.handleInvestigationsDetail)      // /investigations/{id}
 	mux.HandleFunc("/investigations/new", s.handleInvestigationsNew)      // POST: start
 	mux.HandleFunc("/investigations/decide", s.handleInvestigationDecide) // POST: approve/skip/end
+	mux.HandleFunc("/audit", s.handleAudit)
+	mux.HandleFunc("/investigations/hypothesis", s.handleHypothesis)       // POST
+	mux.HandleFunc("/findings/", s.handleFindingAction)                    // POST /findings/{id}/{pin|unpin|ignore|unignore}
+	mux.HandleFunc("/investigations/export/", s.handleInvestigationExport) // GET /investigations/export/{id}
+	mux.HandleFunc("/investigations/events/", s.handleInvestigationSSE)    // GET SSE
 	return mux
 }
 
@@ -260,6 +269,8 @@ func (s *Server) handleRunsNew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	_ = s.store.AuditLog(r.Context(), "operator", "run.create",
+		map[string]any{"run_id": runID, "collector": collector, "host_count": len(hosts)})
 	http.Redirect(w, r, "/runs/"+runID, http.StatusSeeOther)
 }
 
@@ -347,6 +358,8 @@ func (s *Server) handleInvestigationsNew(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	_ = s.store.AuditLog(r.Context(), "operator", "investigation.start",
+		map[string]any{"investigation_id": id, "goal_chars": len(goal)})
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }
 
@@ -397,9 +410,222 @@ func (s *Server) handleInvestigationDecide(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "investigation_id and decision required", http.StatusBadRequest)
 		return
 	}
-	if err := s.loop.Decide(r.Context(), id, decision, "operator"); err != nil {
+	newInput := r.FormValue("new_input_json")
+	if err := s.loop.DecideWithEdit(r.Context(), id, decision, newInput, "operator"); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	_ = s.store.AuditLog(r.Context(), "operator", "investigation.decide",
+		map[string]any{"investigation_id": id, "decision": decision, "edited": newInput != ""})
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
+}
+
+func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.loop == nil {
+		http.Error(w, "investigator disabled", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("investigation_id")
+	claim := r.FormValue("claim")
+	expected := r.FormValue("expected")
+	instruction := r.FormValue("instruction")
+	if id == "" || strings.TrimSpace(claim) == "" {
+		http.Error(w, "investigation_id and claim required", http.StatusBadRequest)
+		return
+	}
+	if err := s.loop.InjectHypothesis(r.Context(), id, claim, expected, instruction, "operator"); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = s.store.AuditLog(r.Context(), "operator", "investigation.hypothesis",
+		map[string]any{"investigation_id": id, "claim_chars": len(claim)})
+	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
+}
+
+func (s *Server) handleFindingAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/findings/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 {
+		http.Error(w, "expected /findings/{id}/{action}", http.StatusBadRequest)
+		return
+	}
+	id, action := parts[0], parts[1]
+	f, err := s.store.GetFinding(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	switch action {
+	case "pin":
+		err = s.store.SetFindingPinned(r.Context(), id, true)
+	case "unpin":
+		err = s.store.SetFindingPinned(r.Context(), id, false)
+	case "ignore":
+		err = s.store.SetFindingIgnored(r.Context(), id, true)
+		if err == nil && s.loop != nil {
+			_ = s.loop.InjectIgnoreNote(r.Context(), f.InvestigationID, f.Code, f.Message)
+		}
+	case "unignore":
+		err = s.store.SetFindingIgnored(r.Context(), id, false)
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.store.AuditLog(r.Context(), "operator", "finding."+action,
+		map[string]any{"finding_id": id, "investigation_id": f.InvestigationID})
+	http.Redirect(w, r, "/investigations/"+f.InvestigationID, http.StatusSeeOther)
+}
+
+func (s *Server) handleInvestigationExport(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/investigations/export/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	inv, err := s.store.GetInvestigation(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	tcs, _ := s.store.ListToolCalls(r.Context(), id)
+	findings, _ := s.store.ListFindings(r.Context(), id)
+
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.md"`)
+	_, _ = fmt.Fprintf(w, "# Investigation %s\n\n", inv.ID)
+	_, _ = fmt.Fprintf(w, "- **Status:** %s\n- **Model:** %s\n- **Created:** %s\n- **Steps:** %d\n- **Tokens:** %d prompt + %d completion\n\n",
+		inv.Status, inv.Model, inv.CreatedAt.UTC().Format(time.RFC3339),
+		inv.TotalToolCalls, inv.TotalPromptTokens, inv.TotalCompletionTokens)
+	_, _ = fmt.Fprintf(w, "## Goal\n\n> %s\n\n", inv.Goal)
+
+	_, _ = fmt.Fprintf(w, "## Findings\n\n")
+	if len(findings) == 0 {
+		_, _ = fmt.Fprintln(w, "_(none)_")
+	}
+	for _, f := range findings {
+		mark := ""
+		if f.Pinned {
+			mark = " 📌"
+		}
+		if f.Ignored {
+			mark = " 🚫"
+		}
+		_, _ = fmt.Fprintf(w, "- **[%s]** `%s`%s — %s\n", strings.ToUpper(f.Severity), f.Code, mark, f.Message)
+	}
+
+	_, _ = fmt.Fprintf(w, "\n## Tool-call timeline\n\n")
+	for _, tc := range tcs {
+		_, _ = fmt.Fprintf(w, "### %d. `%s` — _%s_\n", tc.Seq, tc.Tool, tc.Status)
+		if tc.Rationale != "" {
+			_, _ = fmt.Fprintf(w, "> %s\n\n", tc.Rationale)
+		}
+		_, _ = fmt.Fprintf(w, "**Input:**\n```json\n%s\n```\n", prettyJSON([]byte(tc.InputJSON)))
+		if tc.ResultJSON.Valid && tc.ResultJSON.String != "" {
+			_, _ = fmt.Fprintf(w, "**Result:**\n```json\n%s\n```\n", prettyJSON([]byte(tc.ResultJSON.String)))
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	if inv.SummaryJSON.Valid {
+		_, _ = fmt.Fprintf(w, "## Summary\n\n```json\n%s\n```\n", prettyJSON([]byte(inv.SummaryJSON.String)))
+	}
+}
+
+// handleInvestigationSSE streams a minimal status pulse to the browser so the
+// page reloads itself when something changes. We do NOT stream LLM chunks
+// here — the loop is poll-based, so the SSE just announces server-side
+// state transitions and the page does its own refresh on `state-change`.
+func (s *Server) handleInvestigationSSE(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/investigations/events/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // nginx friendly
+
+	last := ""
+	tick := time.NewTicker(1 * time.Second)
+	defer tick.Stop()
+	deadline := time.After(5 * time.Minute) // cap connection life
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-deadline:
+			_, _ = fmt.Fprint(w, "event: bye\ndata: timeout\n\n")
+			flusher.Flush()
+			return
+		case <-tick.C:
+			snap, err := s.snapshotForSSE(r.Context(), id)
+			if err != nil {
+				return
+			}
+			if snap == last {
+				// Heartbeat comment so the connection does not idle-close.
+				_, _ = fmt.Fprint(w, ": ping\n\n")
+				flusher.Flush()
+				continue
+			}
+			last = snap
+			//nolint:gosec // G705: SSE response is text/event-stream, not HTML — no XSS surface; snap is %q-quoted JSON.
+			_, _ = fmt.Fprintf(w, "event: state-change\ndata: %s\n\n", snap)
+			flusher.Flush()
+		}
+	}
+}
+
+// snapshotForSSE returns a small JSON-ish digest used to detect whether the
+// page should self-refresh: status, total_tool_calls, latest tool_call status,
+// findings count.
+func (s *Server) snapshotForSSE(ctx context.Context, id string) (string, error) {
+	inv, err := s.store.GetInvestigation(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	tcs, _ := s.store.ListToolCalls(ctx, id)
+	findings, _ := s.store.ListFindings(ctx, id)
+	lastStatus := ""
+	if len(tcs) > 0 {
+		lastStatus = tcs[len(tcs)-1].Status
+	}
+	return fmt.Sprintf(`{"status":%q,"steps":%d,"last":%q,"findings":%d}`,
+		inv.Status, inv.TotalToolCalls, lastStatus, len(findings)), nil
+}
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.store.ListAudit(r.Context(), 200)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.render(w, "audit", map[string]any{
+		"Title":   "Audit",
+		"Version": version.Version,
+		"Entries": entries,
+	})
 }

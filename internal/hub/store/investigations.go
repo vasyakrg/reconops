@@ -205,6 +205,21 @@ func (s *Store) InsertToolCall(ctx context.Context, tc ToolCallRow) error {
 	return err
 }
 
+// SetToolCallInput overwrites input_json (used by operator edit-and-rerun).
+func (s *Store) SetToolCallInput(ctx context.Context, id, newInputJSON string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE tool_calls SET input_json=? WHERE id=?`, newInputJSON, id)
+	return err
+}
+
+// SetToolCallRationale overwrites the rationale string. Used by the
+// broad-selector second-confirmation flow to embed a marker.
+func (s *Store) SetToolCallRationale(ctx context.Context, id, rationale string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE tool_calls SET rationale=? WHERE id=?`, rationale, id)
+	return err
+}
+
 func (s *Store) UpdateToolCall(ctx context.Context, id, status, decidedBy, taskID, resultJSON string) error {
 	_, err := s.db.ExecContext(ctx, `
         UPDATE tool_calls SET status=?, decided_by=?, task_id=?, result_json=?, decided_at=?
@@ -300,6 +315,38 @@ func (s *Store) ListFindings(ctx context.Context, investigationID string) ([]Fin
 		out = append(out, f)
 	}
 	return out, rows.Err()
+}
+
+// SetFindingPinned and SetFindingIgnored toggle the corresponding flag for
+// a finding. Used by the operator UI in week 4 to curate the memo.
+func (s *Store) SetFindingPinned(ctx context.Context, id string, pinned bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE findings SET pinned=? WHERE id=?`, boolToInt(pinned), id)
+	return err
+}
+
+func (s *Store) SetFindingIgnored(ctx context.Context, id string, ignored bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE findings SET ignored=? WHERE id=?`, boolToInt(ignored), id)
+	return err
+}
+
+func (s *Store) GetFinding(ctx context.Context, id string) (Finding, error) {
+	var f Finding
+	var pinned, ignored int
+	err := s.db.QueryRowContext(ctx, `
+        SELECT id, investigation_id, severity, code, message, COALESCE(evidence_json,''),
+               pinned, ignored, created_at
+          FROM findings WHERE id=?`, id).
+		Scan(&f.ID, &f.InvestigationID, &f.Severity, &f.Code, &f.Message, &f.EvidenceJSON,
+			&pinned, &ignored, &f.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Finding{}, fmt.Errorf("finding %s not found", id)
+	}
+	if err != nil {
+		return Finding{}, err
+	}
+	f.Pinned = pinned == 1
+	f.Ignored = ignored == 1
+	return f, nil
 }
 
 func nullable(s string) any {

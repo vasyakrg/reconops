@@ -122,6 +122,11 @@ func main() {
 		loop = investigator.NewLoop(st, llmClient, hr, apiSrv.IsOnline, apiSrv.OnlineAgents,
 			cfg.LLM.MaxStepsPerInvestigation, cfg.LLM.MaxTokensPerInvestigation,
 			log.With("comp", "investigator"))
+		// Resume investigations that were active before this hub restarted —
+		// their loop goroutines died with the previous process.
+		if err := loop.Resume(rootCtx); err != nil {
+			log.Warn("investigator resume", "err", err)
+		}
 	}
 
 	lis, gsrv, err := apiSrv.Listen(cfg.Server.GRPCAddr)

@@ -16,29 +16,59 @@
 <div style="border:1px solid #ddd; padding:8px; background:#fffceb;">
   <p><strong>Tool:</strong> <code>{{.Pending.Tool}}</code></p>
   {{if .Pending.Rationale}}<p><em>{{.Pending.Rationale}}</em></p>{{end}}
-  <details open><summary>Input</summary><pre>{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</pre></details>
-  <form method="post" action="/investigations/decide" class="inline">
+  <form method="post" action="/investigations/decide">
     <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-    <button type="submit" name="decision" value="approve">Approve</button>
-    <button type="submit" name="decision" value="skip">Skip</button>
-    <button type="submit" name="decision" value="end">End investigation</button>
+    <details open><summary>Input (edit JSON below to change params)</summary>
+      <textarea name="new_input_json" rows="6" cols="80" style="font-family:monospace;">{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</textarea>
+    </details>
+    <p>
+      <button type="submit" name="decision" value="approve">Approve</button>
+      <button type="submit" name="decision" value="edit">Approve with edits</button>
+      <button type="submit" name="decision" value="skip">Skip</button>
+      <button type="submit" name="decision" value="end">End investigation</button>
+    </p>
   </form>
 </div>
 {{else if eq .Inv.Status "active"}}
 <p class="small">⏳ Waiting for the model — refresh in a moment.</p>
 {{end}}
 
+{{if ne .Inv.Status "done"}}
+<details>
+  <summary>Inject operator hypothesis (overrides model's next step)</summary>
+  <form method="post" action="/investigations/hypothesis" style="margin-top:6px;">
+    <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+    <label class="small">Claim (required):</label><br>
+    <textarea name="claim" rows="2" cols="80" required placeholder="possibly the kube-apiserver cert is expired"></textarea><br>
+    <label class="small">Expected evidence:</label><br>
+    <input type="text" name="expected" size="80" placeholder="check expiration date of /etc/kubernetes/pki/apiserver.crt"><br>
+    <label class="small">Instruction:</label><br>
+    <input type="text" name="instruction" size="80" placeholder="verify before continuing other branches"><br>
+    <button type="submit">Inject</button>
+  </form>
+</details>
+{{end}}
+
 <h3>Findings</h3>
 {{if .Findings}}
 <table>
-  <thead><tr><th>Severity</th><th>Code</th><th>Message</th><th>Evidence</th></tr></thead>
+  <thead><tr><th></th><th>Severity</th><th>Code</th><th>Message</th><th>Evidence</th><th>Actions</th></tr></thead>
   <tbody>
   {{range .Findings}}
-    <tr>
+    <tr {{if .Ignored}}style="opacity:.4"{{end}}>
+      <td>{{if .Pinned}}📌{{end}}{{if .Ignored}}🚫{{end}}</td>
       <td><span class="badge badge-{{if eq .Severity "error"}}error{{else if eq .Severity "warn"}}pending{{else}}info{{end}}">{{.Severity}}</span></td>
       <td><code>{{.Code}}</code></td>
       <td>{{.Message}}</td>
-      <td><pre>{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre></td>
+      <td><details><summary>refs</summary><pre>{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre></details></td>
+      <td class="small">
+        <form class="inline" method="post" action="/findings/{{.ID}}/{{if .Pinned}}unpin{{else}}pin{{end}}">
+          <button type="submit">{{if .Pinned}}unpin{{else}}pin{{end}}</button>
+        </form>
+        <form class="inline" method="post" action="/findings/{{.ID}}/{{if .Ignored}}unignore{{else}}ignore{{end}}">
+          <button type="submit">{{if .Ignored}}restore{{else}}ignore{{end}}</button>
+        </form>
+      </td>
     </tr>
   {{end}}
   </tbody>
@@ -77,6 +107,23 @@
 <pre>{{prettyJSON (printf "%s" .Inv.SummaryJSON.String | bytesOf)}}</pre>
 {{end}}
 
-<p class="small"><a href="/investigations/{{.Inv.ID}}">refresh</a> ·
-{{if eq .Inv.Status "active"}}<em>auto-poll the page until status flips to done/aborted</em>{{end}}</p>
+<p class="small">
+  <a href="/investigations/{{.Inv.ID}}">refresh</a> ·
+  <a href="/investigations/export/{{.Inv.ID}}">export.md</a>
+  {{if eq .Inv.Status "active"}}· <em>auto-refreshing on state changes</em>{{end}}
+</p>
+
+{{if eq .Inv.Status "active"}}
+<script>
+(function() {
+  const es = new EventSource("/investigations/events/{{.Inv.ID}}");
+  let last = null;
+  es.addEventListener("state-change", (e) => {
+    if (last === null) { last = e.data; return; }
+    if (last !== e.data) { es.close(); window.location.reload(); }
+  });
+  es.addEventListener("bye", () => es.close());
+})();
+</script>
+{{end}}
 {{end}}
