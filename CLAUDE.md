@@ -35,13 +35,15 @@ These are not stylistic preferences; they are load-bearing properties of the sys
 
 ## LLM defaults
 
-When implementing the Anthropic client (`internal/hub/llm/`), follow BASE_TASKS.md §2 exactly:
+The LLM client (`internal/hub/llm/`) speaks **OpenAI-compatible** chat/completions with function-calling tools. Default backend is **OpenRouter**; any compatible endpoint works (vLLM, LiteLLM, raw OpenAI). All settings external — never hardcode.
 
-- `model: claude-sonnet-4-6` (default), `claude-opus-4-6` opt-in via UI
-- `max_tokens: 4096`, `temperature: 0`
-- `tool_choice: {"type": "any"}` (text-only replies are a protocol error; use `ask_operator` instead)
-- Extended thinking enabled with `budget_tokens: 3000`
-- Compaction triggers near 150K tokens (PROJECT.md §7.4)
+- `model`: from `RECON_LLM_MODEL` env or `hub.yaml.llm.model`. Compile default: `anthropic/claude-sonnet-4.5`.
+- `base_url`: `RECON_LLM_BASE_URL` / `llm.base_url`. Default `https://openrouter.ai/api/v1`.
+- `api_key`: `RECON_LLM_API_KEY` (envname overridable via `llm.api_key_env`). Required at runtime; if missing, hub starts but investigator endpoints return 503.
+- `max_tokens: 4096`, `temperature: 0`.
+- `tool_choice: "required"` (OpenAI semantics — closest equivalent of Anthropic's `{"type":"any"}`).
+- **Extended thinking is NOT used** — not portable across backends. Documented deviation from BASE_TASKS.md §2 (which targets native Anthropic Messages API).
+- Compaction triggers near 150K tokens (PROJECT.md §7.4) — Week 4.
 
 ## Stack constraints
 
