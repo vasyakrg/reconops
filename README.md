@@ -67,43 +67,63 @@ Browser ── HTTPS ──▶ HUB (recon-hub)
 Full design: `DOCS/Prompts/PROJECT.md`. Prompt engineering for the
 investigator: `DOCS/Prompts/BASE_TASKS.md`.
 
-## Quickstart (single VM, 5 minutes)
-
-Build:
+## Quickstart — docker compose (recommended)
 
 ```bash
-make build              # produces bin/recon-hub and bin/recon-agent
+cp .env.example .env
+# fill in RECON_ADMIN_PASSWORD + RECON_LLM_API_KEY
+make compose-up
 ```
 
-Set up the hub:
+UI is at **https://localhost:8443** (self-signed cert; accept once).
+Hub bcrypt-hashes `RECON_ADMIN_PASSWORD` at startup. Prefer a
+pre-computed hash (CI, config management)? Set
+`RECON_ADMIN_PASSWORD_HASH` instead — it wins when both are set.
+
+### Install an agent on any Ubuntu host
+
+1. Log in at `/hosts`, click **+ Quick install**, type an `agent_id`
+   (unique per host), click **Generate install link**.
+2. Hub flashes a one-liner:
+   ```
+   curl -fsSLk "https://<hub>:8443/install/agent.sh?token=…&id=…" | sudo bash
+   ```
+   (Flips to verified `curl -fsSL` once you set
+   `install.trusted_tls: true` — i.e. when the hub is fronted by a real
+   CA-issued cert.)
+3. Copy, send over SSH/DM, run as root on the target. The script
+   downloads the matching binary from GitHub Releases, creates the
+   `recon` user with read-only capabilities, writes systemd unit +
+   config, starts the service. Agent appears online on `/hosts` within
+   seconds.
+
+### Local dev agent (same host)
 
 ```bash
-sudo install -d -m 0750 -o $USER -g $USER /var/lib/recon
-mkdir -p deploy/dev/state/agent
+make compose-bootstrap-agent
+```
+Starts a compose-network agent under the `with-agent` profile. Useful
+for end-to-end testing without provisioning a separate host.
 
-# Issue a bootstrap token bound to one agent_id.
-TOKEN=$(./bin/recon-hub --config ./deploy/dev/hub.yaml --mode gen-token \
-        --agent-id dev-agent-1 --token-ttl 1h)
-echo "$TOKEN" > deploy/dev/state/agent/bootstrap.token
+### Running bare-metal (no docker)
 
-# Start the hub WITH the LLM (replace with your OpenRouter key). The hub
-# bcrypt-hashes RECON_ADMIN_PASSWORD at startup. For unattended setups
-# (CI, config management) you can pre-compute and pass RECON_ADMIN_PASSWORD_HASH
-# instead — it wins over the plaintext when both are set.
+```bash
+make build   # produces bin/recon-hub + bin/recon-agent
+
 RECON_ADMIN_USER=admin \
 RECON_ADMIN_PASSWORD='strong-password' \
 RECON_LLM_API_KEY=sk-or-v1-... \
   ./bin/recon-hub --config ./deploy/dev/hub.yaml --mode serve
-```
 
-In another terminal:
-
-```bash
+# in another terminal — issue a token + start an agent
+TOKEN=$(./bin/recon-hub --config ./deploy/dev/hub.yaml --mode gen-token \
+        --agent-id dev-agent-1 --token-ttl 1h)
+echo "$TOKEN" > deploy/dev/state/agent/bootstrap.token
 ./bin/recon-agent --config ./deploy/dev/agent.yaml
 ```
 
-Open <http://127.0.0.1:8080>, log in, you should see the agent online.
-Click **Investigations → new**, enter a goal, approve the first step.
+Open `/hosts`, click **Investigations → new**, enter a goal, approve
+the first step.
 
 ## Production deploy
 
@@ -233,9 +253,23 @@ go test -fuzz=FuzzSummarizeJournal -fuzztime=10s ./internal/agent/collectors/sys
 
 ## Status
 
-MVP closed. Five feature weeks shipped, eleven commits including five
-security-review fix commits. See `CHANGELOG.md` for the full diary and
-`DOCS/Prompts/PROJECT.md` for the design.
+MVP closed; productionisation track ongoing. Post-MVP highlights:
+
+- **Docker compose stack** — hub + nginx (TLS termination) + optional
+  local agent. `make compose-up` is the recommended path.
+- **GitHub Actions release pipeline** — on tag `v*`, builds
+  linux/amd64+arm64 tarballs + pushes `ghcr.io/<repo>/recon-{hub,agent}`
+  multi-arch images.
+- **Quick install** — one-liner served by the hub on `/install/agent.sh`;
+  auto-detect arch, pulls the matching release tarball, sets up
+  systemd unit with read-only caps.
+- **k9s UI redesign** — dark, green accent, compact density; live SSE
+  on the investigation detail screen.
+- **Post-MVP security review** — six fix commits closing one High and
+  four Medium findings since the MVP shipped.
+
+See `CHANGELOG.md` for the full diary and `DOCS/Prompts/PROJECT.md` for
+the design.
 
 ## License
 

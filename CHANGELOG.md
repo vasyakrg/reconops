@@ -7,7 +7,150 @@ follow-on security-review fix commit.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions: not yet tagged — pre-1.0.
 
-## [Unreleased] — MVP closed
+## [Unreleased] — Post-MVP
+
+The MVP closed at commit `ebc0c5f`. Everything below ships incrementally
+on top — no new MVP scope, just the productionisation track: k9s
+redesign, docker compose, GitHub Actions release pipeline, quick install,
+scoped investigations, session persistence, network/TLS hardening.
+
+### Web — k9s redesign (F1–F4) (`d65c60a` `289912b` `e111ce9` `ecf3916`)
+
+**Added**
+- F1 shell: 220px sidebar (Fleet / Investigate / System), brand mark,
+  design tokens (`hub.css` k9s aesthetic — dark, green accent
+  `#a8ff7a`, compact density), `embed.FS` static handler.
+- F2 list screens: `/investigations`, `/hosts`, `/runs`, `/collectors`,
+  `/audit` redrawn — k9s tables (28px row, mono columns, dot status,
+  severity badges, label chips). Investigations list gets filter chips
+  + per-row finding mini-bars.
+- F3 detail screens: `/hosts/<id>` (320px sidebar + main grid),
+  `/runs/<id>` (5-col summary + per-host fan-out), `/settings`
+  (LLM / Budgets / Storage cards + Tokens panel).
+- F4 investigation detail: 3-column grid (timeline | findings |
+  context), `framed` pulsing pending-card, real `EventSource` SSE
+  reload on state-change, hypothesis hyp-card.
+- Funcmap helpers: `compactNum`, `shortID`, `sinceUTC`, `pct`,
+  `findCount`, `barRepeat`.
+- `store.NavCounts()` + `store.FindingCountsByInvestigation()` for
+  sidebar badges + mini-bars.
+
+### Operator UX (`25c566d` `178a6d3`)
+
+**Added**
+- Inline login errors — bad creds re-render the form with an alert,
+  no separate "401" page; username preserved.
+- Bootstrap-token list + delete on `/settings`.
+- Host actions on `/hosts/<id>`: **Revoke cert** + **Delete host**
+  (the second refused while online).
+- Scoped investigations: `/investigations` form gets agent-picker
+  with all/none/online-only quick buttons. `allowed_hosts_json`
+  per-investigation (migration 0009); tool handlers
+  (`list_hosts` / `collect` / `collect_batch`) enforce server-side.
+- `RECON_ADMIN_PASSWORD` plaintext accepted — hub bcrypt-hashes on
+  startup. `RECON_ADMIN_PASSWORD_HASH` still wins when both set.
+
+### Docker compose stack (`c617bb8` `24f018c`)
+
+**Added**
+- Multi-stage `Dockerfile` with two runtime targets (`hub-runtime`,
+  `agent-runtime`), CGO_ENABLED=0, alpine runtime, non-root recon
+  user.
+- `docker-compose.yml`: hub (gRPC + UI) + nginx (TLS terminator,
+  auto self-signed cert via `nginx-entrypoint.sh`, SSE-aware proxy
+  block) + agent (compose profile `with-agent`).
+- Make targets: `compose-up`, `compose-gen-hash`,
+  `compose-gen-token`, `compose-bootstrap-agent`,
+  `compose-rotate-ca`, `compose-reset`.
+- `deploy/docker/{hub,agent,nginx}.{yaml,conf}` + `README.md` runbook.
+
+### CI + release (`debd88c` `3c361c3` `3ebdf7f` `b49c5a9`)
+
+**Added**
+- `.github/workflows/ci.yml`: lint (golangci-lint v2.5.0 via action
+  v7) + test (-race) + build smoke on every push/PR. Concurrency
+  cancellation, Go module cache.
+- `.github/workflows/release.yml`: on tag `v*` — artefacts
+  (linux/amd64+arm64 hub & agent tarballs via `make dist`,
+  SHA256SUMS, GitHub Release) + docker (buildx push to
+  `ghcr.io/<repo>/recon-{hub,agent}`, semver+latest, multi-arch).
+- Tarballs renamed `recon-{hub,agent}-linux-{amd64,arm64}.tar.gz`
+  (no version in filename) so the install URL stays stable across
+  releases.
+
+### Quick install (`debd88c` `7c67d32` `142f986` `dd20839` `bb5d71a` `17f4932` `c038e29`)
+
+**Added**
+- `/install/agent.sh` endpoint serves a templated bash one-liner
+  (single-use bootstrap token in URL = auth). Stop + wipe + reinstall
+  path; downloads `recon-agent-linux-<arch>.tar.gz` from the
+  configured release repo (`latest` or pinned tag); creates recon
+  user with adm + systemd-journal supplementary groups + read-only
+  caps; writes systemd unit + agent.yaml; starts service.
+- "+ Quick install" form on `/hosts` flashes the curl one-liner with
+  inline copy-to-clipboard.
+- `install:` config: `release_repo_url`, `version`,
+  `agent_grpc_endpoint` (`auto` or explicit), `grpc_port`,
+  `external_url`, `trusted_tls`. All overridable via
+  `RECON_INSTALL_*` env.
+
+### Crashloop / bootstrap fixes (`72f1e70` `9bd238a` `e6f95d3` `b56babd` `47229fc` `fa5b29e`)
+
+**Fixed**
+- Agent deletes `bootstrap.token` after a successful Enroll.
+- Agent refuses to call Enroll when both cert and token are
+  missing — actionable "operator must issue a fresh token" error
+  instead of crashlooping with PermissionDenied.
+- Agent removes the on-disk token when Enroll RPC returns
+  PermissionDenied — next start short-circuits to the no-token
+  guard.
+- `make compose-bootstrap-agent` revokes the prior identity on the
+  hub before issuing a new token; `/install/agent.sh` quick-install
+  handler does the same.
+- gRPC dial gets a 15s `WaitForStateChange` cap — agent doesn't
+  hang silently on TLS-handshake stalls; produces a clean
+  `dial timeout to <endpoint>` error.
+- Install script: stop+wipe always runs; journalctl scoped to
+  `--since $START_TS` so we don't dump stale lines from a previous
+  failed process.
+
+### Networking + TLS fixes (`ab592ae` `b69e426` `989802a`)
+
+**Fixed**
+- Agent gRPC dialer pinned to `tcp4` — avoids ENETUNREACH from
+  IPv6 happy-eyeballs on hosts with a configured-but-unusable v6
+  default route.
+- Hub regenerates the server leaf when `dns_names` / `ip_addrs` in
+  `hub.yaml` change (symmetric drift — detects both added and
+  removed SANs). CA stays put.
+
+### Sessions (`0849b4d`)
+
+**Added**
+- Operator sessions persisted in SQLite (`web_sessions`, migration
+  0010) — survive `docker compose up -d --force-recreate hub`.
+  Login throttle + flash messages stay in memory by design.
+
+### Security review fixes (`014b1e3`)
+
+**Fixed**
+- **H1** Login throttle XFF-spoofable — now only honors
+  `X-Forwarded-For` when `auth.BehindTLSProxy` is true.
+- **M1** Quick install silently kicked online agents — refuses
+  with HTTP 409 when host is online; emits `identity.revoke`
+  audit row whenever a prior enrolment is replaced.
+- **M2** `curl -k` baked into every install one-liner — added
+  `install.trusted_tls` flag; flips to verified `curl -fsSL` once
+  a real CA cert fronts the hub.
+- **M3** `/install/agent.sh` leaked deployment metadata to anyone
+  — added `store.LookupBootstrapToken` (validate-only, no consume);
+  bogus tokens get a flat 404.
+- **M4** Server cert SAN drift detection was superset-only —
+  symmetric check now also detects removed SANs.
+
+---
+
+## [Initial MVP — five weeks] — closed at `ebc0c5f`
 
 ### Week 5 — Auth, compaction, retention, packaging (`63ca84c`, `05abc13`)
 
