@@ -1,32 +1,97 @@
 {{define "settings"}}
-<h2>Settings</h2>
-
-<h3>Issue bootstrap token</h3>
-<p class="small">Tokens are bound to one agent_id (security — see PROJECT.md §9.2 / review C2).</p>
-<form method="post" action="/settings/issue-token">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <p>
-    <label>agent_id: <input type="text" name="agent_id" required></label>
-    <label>TTL: <input type="text" name="ttl" value="24h" size="6"></label>
-    <button type="submit">Issue</button>
-  </p>
-</form>
+<header class="pg-hd">
+  <div>
+    <div class="title">Settings</div>
+    <div class="sub mono">read-only diagnostic hub · v{{.Version}}</div>
+  </div>
+</header>
 
 {{if .Issued}}
-<div style="border:1px solid #1a7f37; background:#d6f5d6; padding:8px; margin:1em 0;">
-  <p><strong>Issued (copy now — shown once):</strong></p>
-  <pre>{{.Issued}}</pre>
+<div class="card" style="border-color:color-mix(in oklab, var(--ok) 35%, var(--border));margin-bottom:14px;background:var(--ok-bg)">
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ok);font-weight:600;margin-bottom:6px">Bootstrap token issued — copy now, shown once</div>
+  <pre style="margin:0">{{.Issued}}</pre>
 </div>
 {{end}}
 
-<h3>Enrolled hosts</h3>
-{{if .Hosts}}
-<ul>
-  {{range .Hosts}}
-    <li><a href="/hosts/{{.ID}}">{{.ID}}</a> — <span class="status-{{.Status}}">{{.Status}}</span></li>
-  {{end}}
-</ul>
-{{else}}
-<p class="empty">No hosts enrolled yet.</p>
-{{end}}
+<div style="display:grid;grid-template-columns:1fr 320px;gap:18px;align-items:start">
+
+  <div style="display:flex;flex-direction:column;gap:14px">
+
+    <div class="panel">
+      <div class="panel-hd"><span>LLM endpoint</span></div>
+      <div style="padding:14px;display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-family:var(--font-mono);font-size:12px">
+        <span class="muted">model</span><span style="color:var(--fg-0)">{{if .Model}}{{.Model}}{{else}}<span class="hint-error">disabled</span>{{end}}</span>
+        <span class="muted">base_url</span><span style="color:var(--fg-1)">RECON_LLM_BASE_URL</span>
+        <span class="muted">api_key</span><span style="color:var(--fg-1)">RECON_LLM_API_KEY (env)</span>
+        <span class="muted">temperature</span><span style="color:var(--fg-0)">0.0</span>
+        <span class="muted">tool_choice</span><span style="color:var(--fg-0)">required</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-hd"><span>Budgets</span></div>
+      <div style="padding:14px;display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-family:var(--font-mono);font-size:12px">
+        <span class="muted">max steps / inv</span><span style="color:var(--fg-0)">{{if .MaxSteps}}{{.MaxSteps}}{{else}}—{{end}}</span>
+        <span class="muted">max tokens / inv</span><span style="color:var(--fg-0)">{{if .MaxTokens}}{{compactNum .MaxTokens}}{{else}}—{{end}}</span>
+        <span class="muted">compaction at</span><span style="color:var(--fg-0)">~150k tokens</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-hd"><span>Storage</span></div>
+      <div style="padding:14px;display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-family:var(--font-mono);font-size:12px">
+        <span class="muted">db</span><span style="color:var(--fg-1)">SQLite (modernc.org/sqlite, no CGO)</span>
+        <span class="muted">artifacts</span><span style="color:var(--fg-1)">/var/lib/recon/artifacts</span>
+        <span class="muted">retention</span><span style="color:var(--fg-0)">7 days</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:14px">
+
+    <div id="tokens" class="panel">
+      <div class="panel-hd"><span>Bootstrap tokens</span></div>
+      <form method="post" action="/settings/issue-token" style="padding:14px;display:flex;flex-direction:column;gap:8px">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">agent_id</label>
+        <input type="text" name="agent_id" required placeholder="prod-app-01" style="font-family:var(--font-mono);font-size:12px">
+        <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">TTL</label>
+        <input type="text" name="ttl" value="24h" style="font-family:var(--font-mono);font-size:12px">
+        <button class="btn primary" type="submit">Issue token</button>
+        <div class="dim" style="font-size:10.5px;line-height:1.45">Tokens are bound to one agent_id and shown only once after issue.</div>
+      </form>
+    </div>
+
+    <div class="panel">
+      <div class="panel-hd"><span>Admins</span></div>
+      <div style="padding:12px 14px">
+        {{if .AdminUser}}
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+          <span class="avatar">{{slice .AdminUser 0 2}}</span>
+          <span class="mono" style="color:var(--fg-0)">{{.AdminUser}}</span>
+          <span class="badge accent" style="margin-left:auto">admin</span>
+        </div>
+        {{else}}
+        <div class="dim">no auth configured (loopback-only)</div>
+        {{end}}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-hd"><span>Enrolled agents</span></div>
+      <div>
+        {{range .Hosts}}
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:12px">
+          <span class="dot {{if eq .Status "online"}}ok{{else if eq .Status "offline"}}offline{{else}}warn{{end}}"></span>
+          <a class="mono" style="color:var(--fg-0);font-size:11.5px" href="/hosts/{{.ID}}">{{.ID}}</a>
+        </div>
+        {{else}}
+        <div class="empty" style="padding:18px 14px">no hosts enrolled</div>
+        {{end}}
+      </div>
+    </div>
+
+  </div>
+</div>
 {{end}}

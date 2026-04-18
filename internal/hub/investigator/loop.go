@@ -62,6 +62,17 @@ func (l *Loop) Budgets() (int, int) {
 	return l.maxSteps, l.maxTokens
 }
 
+// Info exposes the active LLM model and base URL for display in /settings.
+// The hub doesn't keep the base URL on the Loop, so we report only the
+// model here; the second return value is reserved for a future extension
+// once the LLM client surfaces it.
+func (l *Loop) Info() (model, baseURL string) {
+	if l == nil || l.llm == nil {
+		return "", ""
+	}
+	return l.llm.Model(), ""
+}
+
 // Start creates a new investigation row, persists the system prompt + user
 // goal as the first two messages, and triggers the first LLM call.
 func (l *Loop) Start(ctx context.Context, goal, createdBy string) (string, error) {

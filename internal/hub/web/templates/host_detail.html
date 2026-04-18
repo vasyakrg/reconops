@@ -1,36 +1,74 @@
 {{define "host_detail"}}
-<h2>Host {{.Host.ID}} <span class="status-{{.Host.Status}}">[{{.Host.Status}}]</span></h2>
-<p class="small">Agent v{{.Host.AgentVersion}} · last seen {{.Host.LastSeenAt.Format "2006-01-02 15:04:05"}} UTC · fingerprint <code>{{truncate .Host.CertFingerprint 23}}…</code></p>
+<header class="pg-hd">
+  <div>
+    <div class="crumbs"><a href="/hosts">Hosts</a><span class="sep">/</span><span class="mono" style="color:var(--fg-1)">{{.Host.ID}}</span></div>
+    <div style="margin-top:6px;display:flex;align-items:center;gap:10px">
+      {{if eq .Host.Status "online"}}<span class="badge ok"><span class="dot ok pulse" style="width:6px;height:6px"></span>online</span>
+      {{else if eq .Host.Status "offline"}}<span class="badge err"><span class="dot offline" style="width:6px;height:6px"></span>offline</span>
+      {{else}}<span class="badge warn"><span class="dot warn pulse" style="width:6px;height:6px"></span>{{.Host.Status}}</span>{{end}}
+      <span class="mono muted" style="font-size:11.5px">agent v{{.Host.AgentVersion}}</span>
+      <span class="mono muted" style="font-size:11.5px" title="{{.Host.LastSeenAt.UTC.Format "2006-01-02 15:04:05 UTC"}}">last seen {{sinceUTC .Host.LastSeenAt}}</span>
+    </div>
+  </div>
+</header>
 
-<h3>Labels</h3>
-<ul>{{range $k, $v := .Host.Labels}}<li><code>{{$k}}={{$v}}</code></li>{{end}}</ul>
+<div style="display:grid;grid-template-columns:320px 1fr;gap:18px">
 
-<h3>Auto-facts</h3>
-<ul>{{range $k, $v := .Host.Facts}}<li><code>{{$k}}={{$v}}</code></li>{{end}}</ul>
+  <!-- left column -->
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div class="panel">
+      <div class="panel-hd"><span>Identity</span></div>
+      <div style="padding:12px 14px">
+        <div style="display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-family:var(--font-mono);font-size:11.5px">
+          <span class="muted">host_id</span><span style="color:var(--fg-0);word-break:break-all">{{.Host.ID}}</span>
+          {{with index .Host.Facts "primary_ip"}}<span class="muted">ip</span><span style="color:var(--fg-0)">{{.}}</span>{{end}}
+          {{with index .Host.Facts "cpu_count"}}<span class="muted">cpu</span><span style="color:var(--fg-0)">{{.}}</span>{{end}}
+          {{with index .Host.Facts "ram_gb"}}<span class="muted">ram</span><span style="color:var(--fg-0)">{{.}}G</span>{{end}}
+          {{with index .Host.Facts "os"}}<span class="muted">os</span><span style="color:var(--fg-0)">{{.}}</span>{{end}}
+          {{with index .Host.Facts "arch"}}<span class="muted">arch</span><span style="color:var(--fg-0)">{{.}}</span>{{end}}
+          {{with index .Host.Facts "kernel"}}<span class="muted">kernel</span><span style="color:var(--fg-0);font-size:10.5px">{{.}}</span>{{end}}
+          <span class="muted">agent</span><span style="color:var(--fg-0)">v{{.Host.AgentVersion}}</span>
+          <span class="muted">enrolled</span><span style="color:var(--fg-0)">{{.Host.FirstSeenAt.UTC.Format "2006-01-02"}}</span>
+          <span class="muted">last seen</span><span style="color:var(--fg-0)">{{.Host.LastSeenAt.UTC.Format "15:04:05 UTC"}}</span>
+          <span class="muted">cert fp</span><span style="color:var(--fg-1);font-size:10px;word-break:break-all">{{.Host.CertFingerprint}}</span>
+        </div>
+      </div>
+    </div>
 
-<h3>Available collectors</h3>
-{{if .Collectors}}
-<table>
-  <thead><tr><th>Collector</th><th>Version</th><th>Run</th></tr></thead>
-  <tbody>
-  {{range .Collectors}}
-    <tr>
-      <td><code>{{.Name}}</code></td>
-      <td>{{.Version}}</td>
-      <td>
-        <form class="inline" action="/runs/new" method="post">
+    <div class="panel">
+      <div class="panel-hd"><span>Labels</span></div>
+      <div style="padding:12px 14px;display:flex;gap:5px;flex-wrap:wrap">
+        {{range $k, $v := .Host.Labels}}<span class="chip"><span class="k">{{$k}}</span><span class="muted">=</span><span class="v">{{$v}}</span></span>{{else}}<span class="dim">no labels</span>{{end}}
+      </div>
+    </div>
+  </div>
+
+  <!-- right column -->
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div class="panel">
+      <div class="panel-hd">
+        <span>Available collectors</span>
+        <span class="muted mono" style="text-transform:none;letter-spacing:0;font-size:11px">{{len .Collectors}} registered</span>
+      </div>
+      {{if .Collectors}}
+      <div>
+        {{range .Collectors}}
+        <form method="post" action="/runs/new" style="display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:12px">
           <input type="hidden" name="csrf" value="{{$.CSRF}}">
           <input type="hidden" name="host_id" value="{{$.Host.ID}}">
           <input type="hidden" name="collector" value="{{.Name}}">
           <input type="hidden" name="name" value="manual: {{.Name}} on {{$.Host.ID}}">
-          <button type="submit">Run</button>
+          <span class="mono" style="color:var(--fg-0);width:160px">{{.Name}}</span>
+          <span class="mono dim" style="font-size:10.5px">v{{.Version}}</span>
+          <button class="btn xs" type="submit" style="margin-left:auto">run</button>
         </form>
-      </td>
-    </tr>
-  {{end}}
-  </tbody>
-</table>
-{{else}}
-<p class="empty">Agent has not announced any collectors.</p>
-{{end}}
+        {{end}}
+      </div>
+      {{else}}
+      <div class="empty" style="padding:18px 14px">Agent has not announced any collectors.</div>
+      {{end}}
+    </div>
+  </div>
+
+</div>
 {{end}}

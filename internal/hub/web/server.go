@@ -304,19 +304,34 @@ func (s *Server) handleRunsDetail(w http.ResponseWriter, r *http.Request) {
 		Result *store.Result
 	}
 	views := make([]tview, 0, len(tasks))
+	collector := ""
+	var ok, errCnt, pending int
 	for _, t := range tasks {
 		v := tview{Task: t}
 		if res, err := s.store.GetResult(r.Context(), t.ID); err == nil {
 			v.Result = &res
 		}
 		views = append(views, v)
+		if collector == "" {
+			collector = t.Collector
+		}
+		switch t.Status {
+		case "ok":
+			ok++
+		case "pending", "sent":
+			pending++
+		default:
+			errCnt++
+		}
 	}
 	s.renderForReq(w, r, "run_detail", map[string]any{
 		"Title":        "Run " + runID,
-		"Version":      version.Version,
-		"ContentBlock": "run_detail",
 		"Run":          run,
 		"Tasks":        views,
+		"Collector":    collector,
+		"OkCount":      ok,
+		"ErrCount":     errCnt,
+		"PendingCount": pending,
 	})
 }
 
@@ -381,11 +396,20 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
 		issued = s.sessions.popFlash(sid.Value, "issued_token")
 	}
+	model := ""
+	maxSteps, maxTokens := 0, 0
+	if s.loop != nil {
+		model, _ = s.loop.Info()
+		maxSteps, maxTokens = s.loop.Budgets()
+	}
 	s.renderForReq(w, r, "settings", map[string]any{
-		"Title":   "Settings",
-		"Version": version.Version,
-		"Hosts":   hosts,
-		"Issued":  issued,
+		"Title":     "Settings",
+		"Hosts":     hosts,
+		"Issued":    issued,
+		"Model":     model,
+		"MaxSteps":  maxSteps,
+		"MaxTokens": maxTokens,
+		"AdminUser": s.auth.Username,
 	})
 }
 
