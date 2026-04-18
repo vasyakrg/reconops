@@ -30,6 +30,7 @@ type Message struct {
 	Role            string
 	Content         string
 	ToolCallID      sql.NullString
+	ToolCallsJSON   sql.NullString // serialized []llm.ToolCall for assistant rows (C1)
 	Timestamp       time.Time
 	Archived        bool
 }
@@ -158,9 +159,9 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 		return 0, err
 	}
 	res, err := tx.ExecContext(ctx, `
-        INSERT INTO messages (investigation_id, seq, role, content, tool_call_id, timestamp, archived)
-        VALUES (?, ?, ?, ?, ?, ?, 0)`,
-		m.InvestigationID, nextSeq, m.Role, m.Content, m.ToolCallID, time.Now().UTC())
+        INSERT INTO messages (investigation_id, seq, role, content, tool_call_id, tool_calls_json, timestamp, archived)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+		m.InvestigationID, nextSeq, m.Role, m.Content, m.ToolCallID, m.ToolCallsJSON, time.Now().UTC())
 	if err != nil {
 		return 0, err
 	}
@@ -172,7 +173,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message) (int64, error) {
 }
 
 func (s *Store) ListMessages(ctx context.Context, investigationID string, includeArchived bool) ([]Message, error) {
-	q := `SELECT id, investigation_id, seq, role, content, tool_call_id, timestamp, archived
+	q := `SELECT id, investigation_id, seq, role, content, tool_call_id, tool_calls_json, timestamp, archived
             FROM messages WHERE investigation_id=?`
 	if !includeArchived {
 		q += ` AND archived=0`
@@ -187,7 +188,7 @@ func (s *Store) ListMessages(ctx context.Context, investigationID string, includ
 	for rows.Next() {
 		var m Message
 		var arch int
-		if err := rows.Scan(&m.ID, &m.InvestigationID, &m.Seq, &m.Role, &m.Content, &m.ToolCallID, &m.Timestamp, &arch); err != nil {
+		if err := rows.Scan(&m.ID, &m.InvestigationID, &m.Seq, &m.Role, &m.Content, &m.ToolCallID, &m.ToolCallsJSON, &m.Timestamp, &arch); err != nil {
 			return nil, err
 		}
 		m.Archived = arch == 1

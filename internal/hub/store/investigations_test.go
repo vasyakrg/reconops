@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -83,6 +84,31 @@ func TestInvestigationLifecycle(t *testing.T) {
 	got, _ = s.GetInvestigation(ctx, "inv-1")
 	if got.TotalPromptTokens != 1000 || got.TotalCompletionTokens != 200 || got.TotalToolCalls != 1 {
 		t.Fatalf("counters: %+v", got)
+	}
+}
+
+func TestMessageToolCallsRoundtrip(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	_ = s.InsertInvestigation(ctx, Investigation{
+		ID: "inv-tc", Goal: "g", Status: "active", CreatedBy: "o", Model: "m", BaseURL: "u",
+	})
+	tcsJSON := `[{"id":"call_1","type":"function","function":{"name":"list_hosts","arguments":"{}"}}]`
+	if _, err := s.AppendMessage(ctx, Message{
+		InvestigationID: "inv-tc", Role: "assistant", Content: "let me check the inventory first",
+		ToolCallsJSON: sql.NullString{String: tcsJSON, Valid: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := s.ListMessages(ctx, "inv-tc", false)
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("list: %v len=%d", err, len(msgs))
+	}
+	if !msgs[0].ToolCallsJSON.Valid || msgs[0].ToolCallsJSON.String != tcsJSON {
+		t.Fatalf("tool_calls_json round-trip failed: %+v", msgs[0])
+	}
+	if msgs[0].Content != "let me check the inventory first" {
+		t.Fatalf("content lost: %q", msgs[0].Content)
 	}
 }
 

@@ -86,6 +86,21 @@ func TestChatRoundtrip(t *testing.T) {
 	}
 }
 
+func TestSanitizeForError(t *testing.T) {
+	apiKey := "sk-or-v1-abc123def456ghi789" //nolint:gosec // test fixture, not a real credential
+	body := []byte(`{"error":"key sk-or-v1-abc123def456ghi789 invalid; also seen sk-ant-xyz9876543210abcd"}`)
+	got := sanitizeForError(body, apiKey)
+	if strings.Contains(string(got), apiKey) {
+		t.Errorf("apiKey leaked: %s", got)
+	}
+	if strings.Contains(string(got), "sk-ant-xyz") {
+		t.Errorf("provider key shape leaked: %s", got)
+	}
+	if !strings.Contains(string(got), "REDACTED") {
+		t.Errorf("expected redaction marker: %s", got)
+	}
+}
+
 func TestChatErrorBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

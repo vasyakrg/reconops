@@ -223,8 +223,22 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 	pbMsgs := make([]llm.Message, 0, len(msgs))
 	for _, m := range msgs {
 		switch m.Role {
-		case "system", "user", "assistant":
+		case "system", "user":
 			pbMsgs = append(pbMsgs, llm.Message{Role: m.Role, Content: m.Content})
+		case "assistant":
+			// (C1) Reconstruct assistant message with the SAME tool_calls
+			// the LLM emitted, otherwise the next-turn 'tool' message has
+			// no preceding assistant tool_call to anchor on, and the
+			// provider rejects the conversation with "tool_call_id not
+			// found".
+			am := llm.Message{Role: "assistant", Content: m.Content}
+			if m.ToolCallsJSON.Valid && m.ToolCallsJSON.String != "" {
+				var tcs []llm.ToolCall
+				if err := json.Unmarshal([]byte(m.ToolCallsJSON.String), &tcs); err == nil {
+					am.ToolCalls = tcs
+				}
+			}
+			pbMsgs = append(pbMsgs, am)
 		case "system_note":
 			// Encoded as a user message with a SYSTEM NOTE prefix.
 			pbMsgs = append(pbMsgs, llm.Message{Role: "user", Content: "SYSTEM NOTE: " + m.Content})
@@ -251,10 +265,21 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 
 	choice := resp.Choices[0].Message
 
-	// Persist assistant message (rationale text + tool_calls).
-	asstBody, _ := json.Marshal(choice)
+	// (C1) Store assistant content (rationale) AS-IS in `content`, and the
+	// tool_calls list (after one-tool-per-turn enforcement below) in a
+	// separate column. ListMessages reassembles both on the next turn.
+	keptCalls := choice.ToolCalls
+	if len(keptCalls) > 1 {
+		keptCalls = keptCalls[:1]
+	}
+	var toolCallsJSON sql.NullString
+	if len(keptCalls) > 0 {
+		body, _ := json.Marshal(keptCalls)
+		toolCallsJSON = sql.NullString{String: string(body), Valid: true}
+	}
 	if _, err := l.store.AppendMessage(ctx, store.Message{
-		InvestigationID: inv.ID, Role: "assistant", Content: string(asstBody),
+		InvestigationID: inv.ID, Role: "assistant",
+		Content: choice.Content, ToolCallsJSON: toolCallsJSON,
 	}); err != nil {
 		return false, err
 	}
@@ -380,13 +405,21 @@ func (l *Loop) lastApproved(ctx context.Context, investigationID string) (*store
 	return nil, nil
 }
 
-// isAutoTool returns true for read-only catalogue lookups that do not touch
-// any host. Dispatching them inline avoids needless click-through.
+// isAutoTool returns true ONLY for pure-inventory tools that read DB rows
+// already cached on the hub: no host I/O, no artifact reads, no findings
+// created, no data sent to the LLM beyond a small in-memory listing. PROJECT.md
+// §7.2 requires operator approval per step; these three are exempted because
+// they merely surface what the operator already sees on /hosts and
+// /collectors pages — clicking through them would be pure noise.
+//
+// Everything else (search_artifact, get_full_result, compare_across_hosts,
+// add_finding, collect*, ask_operator, mark_done) goes through the operator.
+// In particular: search_artifact + get_full_result are gated because they
+// move file/result content into the LLM context, i.e. to a third-party
+// provider — operator must consent.
 func isAutoTool(name string) bool {
 	switch name {
-	case "list_hosts", "list_collectors", "describe_collector",
-		"search_artifact", "compare_across_hosts", "get_full_result",
-		"add_finding":
+	case "list_hosts", "list_collectors", "describe_collector":
 		return true
 	}
 	return false
@@ -417,22 +450,13 @@ func waitForTasks(ctx context.Context, st *store.Store, ids []string, timeout ti
 }
 
 func taskTerminal(ctx context.Context, st *store.Store, id string) (bool, error) {
-	runs, err := st.ListRuns(ctx, 200)
+	t, err := st.GetTask(ctx, id)
 	if err != nil {
 		return false, err
 	}
-	for _, r := range runs {
-		tasks, _ := st.ListTasks(ctx, r.ID)
-		for _, t := range tasks {
-			if t.ID != id {
-				continue
-			}
-			switch t.Status {
-			case "ok", "error", "timeout", "canceled", "undeliverable":
-				return true, nil
-			}
-			return false, nil
-		}
+	switch t.Status {
+	case "ok", "error", "timeout", "canceled", "undeliverable":
+		return true, nil
 	}
 	return false, nil
 }

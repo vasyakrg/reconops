@@ -123,6 +123,27 @@ func (s *Store) FinishTask(ctx context.Context, id, status string, durMs int64, 
 	return err
 }
 
+// GetTask returns a single task by id. Cheap O(1) — added to avoid the
+// O(n_runs × n_tasks) walk that the investigator was doing in week 3.
+func (s *Store) GetTask(ctx context.Context, id string) (Task, error) {
+	var t Task
+	var params string
+	err := s.db.QueryRowContext(ctx, `
+        SELECT id, run_id, host_id, collector, COALESCE(params_json,''), status,
+               started_at, finished_at, duration_ms, COALESCE(error,'')
+          FROM tasks WHERE id=?`, id).
+		Scan(&t.ID, &t.RunID, &t.HostID, &t.Collector, &params, &t.Status,
+			&t.StartedAt, &t.FinishedAt, &t.DurationMs, &t.Error)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, fmt.Errorf("task %s not found", id)
+	}
+	if err != nil {
+		return Task{}, err
+	}
+	_ = json.Unmarshal([]byte(params), &t.Params)
+	return t, nil
+}
+
 func (s *Store) ListTasks(ctx context.Context, runID string) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx, `
         SELECT id, run_id, host_id, collector, COALESCE(params_json,''), status,

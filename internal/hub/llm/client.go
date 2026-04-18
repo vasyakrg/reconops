@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -182,7 +183,11 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("llm http %d: %s", resp.StatusCode, snippet(respBody, 512))
+		// Strip our own bearer token + any obvious provider key prefixes
+		// before surfacing the body — error strings end up in audit logs
+		// and the unauthenticated UI on /investigations/{id}.
+		safe := sanitizeForError(respBody, c.apiKey)
+		return nil, fmt.Errorf("llm http %d: %s", resp.StatusCode, snippet(safe, 512))
 	}
 	var out ChatResponse
 	if err := json.Unmarshal(respBody, &out); err != nil {
@@ -199,4 +204,19 @@ func snippet(b []byte, max int) string {
 		return string(b)
 	}
 	return string(b[:max]) + "…"
+}
+
+// keyPattern matches common provider key shapes: sk-or-..., sk-ant-...,
+// sk-..., or-... (OpenRouter), tokens ≥ 16 alphanum.
+var keyPattern = regexp.MustCompile(`(?i)(sk-(?:or-)?(?:ant-)?[A-Za-z0-9_\-]{16,}|or-v[0-9a-f-]{16,})`)
+
+// sanitizeForError redacts bearer tokens that providers sometimes echo back
+// in 401 / 403 bodies. Our own apiKey is replaced explicitly; any other
+// token-shaped string matching keyPattern is masked too.
+func sanitizeForError(body []byte, apiKey string) []byte {
+	out := body
+	if apiKey != "" {
+		out = bytes.ReplaceAll(out, []byte(apiKey), []byte("***REDACTED***"))
+	}
+	return keyPattern.ReplaceAll(out, []byte("***REDACTED***"))
 }

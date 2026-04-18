@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vasyakrg/recon/internal/hub/runner"
 	"github.com/vasyakrg/recon/internal/hub/store"
@@ -351,21 +353,7 @@ func listArtifactNames(dir string) []string {
 }
 
 func getTask(ctx context.Context, env HandlerEnv, id string) (store.Task, error) {
-	// Cheap lookup via ListTasks scoped by run; we do not have GetTask yet.
-	// Walk recent runs until we find it. For week 3 this is sufficient.
-	runs, err := env.Store.ListRuns(ctx, 200)
-	if err != nil {
-		return store.Task{}, err
-	}
-	for _, r := range runs {
-		tasks, _ := env.Store.ListTasks(ctx, r.ID)
-		for _, t := range tasks {
-			if t.ID == id {
-				return t, nil
-			}
-		}
-	}
-	return store.Task{}, fmt.Errorf("task %s not found", id)
+	return env.Store.GetTask(ctx, id)
 }
 
 func handleCollect(ctx context.Context, env HandlerEnv, argsJSON string) ToolResult {
@@ -415,6 +403,12 @@ func handleSearchArtifact(ctx context.Context, env HandlerEnv, argsJSON string) 
 	if a.TaskID == "" || a.ArtifactName == "" || a.Pattern == "" {
 		return errResult(fmt.Errorf("task_id, artifact_name, pattern required"))
 	}
+	// (C3) Cap pattern length and reject anchored quantifier-of-quantifier
+	// shapes that even RE2 evaluates in O(n²) on large input. The list is
+	// best-effort — we also enforce a per-line budget below.
+	if len(a.Pattern) > 512 {
+		return errResult(fmt.Errorf("pattern too long (%d bytes); max 512", len(a.Pattern)))
+	}
 	if a.MaxMatches <= 0 {
 		a.MaxMatches = 50
 	}
@@ -439,39 +433,82 @@ func handleSearchArtifact(ctx context.Context, env HandlerEnv, argsJSON string) 
 	if !strings.HasPrefix(clean, filepath.Clean(res.ArtifactDir)+string(os.PathSeparator)) {
 		return errResult(fmt.Errorf("path traversal"))
 	}
-	body, err := os.ReadFile(clean) //nolint:gosec // path validated above
+	// (C3) Cap how much of the artifact we load into memory — search is
+	// best-effort over the prefix when the file exceeds the cap.
+	const artifactReadCap = 4 * 1024 * 1024
+	f, err := os.Open(clean) //nolint:gosec // path validated above
 	if err != nil {
 		return errResult(err)
 	}
+	body, err := io.ReadAll(io.LimitReader(f, artifactReadCap+1))
+	_ = f.Close()
+	if err != nil {
+		return errResult(err)
+	}
+	scanned := body
+	scanTruncated := false
+	if int64(len(scanned)) > artifactReadCap {
+		scanned = scanned[:artifactReadCap]
+		scanTruncated = true
+	}
+
 	re, err := regexp.Compile("(?i)" + a.Pattern)
 	if err != nil {
 		return errResult(fmt.Errorf("regex: %w", err))
 	}
-	lines := strings.Split(string(body), "\n")
+
+	// (C3) Hard deadline on the regex pass itself. Goroutine + cancel via
+	// dedicated context — RE2 is linear in input but with a bad pattern
+	// can still spend tens of seconds on a 4 MiB blob.
 	type match struct {
 		LineNo  int      `json:"line"`
 		Text    string   `json:"text"`
 		Context []string `json:"context,omitempty"`
 	}
-	var hits []match
-	for i, ln := range lines {
-		if !re.MatchString(ln) {
-			continue
+	type result struct {
+		hits []match
+		err  error
+	}
+	done := make(chan result, 1)
+	scanCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	go func() {
+		lines := strings.Split(string(scanned), "\n")
+		var hits []match
+		for i, ln := range lines {
+			if scanCtx.Err() != nil {
+				done <- result{hits: hits, err: scanCtx.Err()}
+				return
+			}
+			if !re.MatchString(ln) {
+				continue
+			}
+			m := match{LineNo: i + 1, Text: ln}
+			if a.ContextLines > 0 {
+				lo := max0(i - a.ContextLines)
+				hi := minInt(len(lines), i+a.ContextLines+1)
+				m.Context = append([]string(nil), lines[lo:hi]...)
+			}
+			hits = append(hits, m)
+			if len(hits) >= a.MaxMatches {
+				break
+			}
 		}
-		m := match{LineNo: i + 1, Text: ln}
-		if a.ContextLines > 0 {
-			lo := max0(i - a.ContextLines)
-			hi := minInt(len(lines), i+a.ContextLines+1)
-			m.Context = append([]string(nil), lines[lo:hi]...)
-		}
-		hits = append(hits, m)
-		if len(hits) >= a.MaxMatches {
-			break
-		}
+		done <- result{hits: hits}
+	}()
+
+	r := <-done
+	if r.err != nil {
+		return errResult(fmt.Errorf("regex scan timeout (5s) — narrow the pattern: %w", r.err))
 	}
 	return okResult(map[string]any{
-		"task_id": a.TaskID, "artifact": a.ArtifactName,
-		"matches": hits, "count": len(hits), "truncated": len(hits) >= a.MaxMatches,
+		"task_id":        a.TaskID,
+		"artifact":       a.ArtifactName,
+		"matches":        r.hits,
+		"count":          len(r.hits),
+		"truncated":      len(r.hits) >= a.MaxMatches,
+		"file_truncated": scanTruncated,
+		"scanned_bytes":  len(scanned),
 	})
 }
 
