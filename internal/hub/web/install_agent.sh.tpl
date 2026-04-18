@@ -40,13 +40,12 @@ install -d -m 0750 -o recon -g recon "$STATE_DIR"
 install -d -m 0755 "$CONF_DIR"
 
 # Re-running the installer is the operator's "clean reinstall" lever:
-# stop the service and wipe the prior identity so the new token + new
-# endpoint are honoured, instead of crash-looping with stale config.
-if systemctl is-enabled --quiet "${SVC_NAME}" 2>/dev/null; then
-  log "stopping prior recon-agent + wiping stale identity"
-  systemctl stop "${SVC_NAME}" 2>/dev/null || true
-  rm -f "${STATE_DIR}/agent.pem" "${STATE_DIR}/agent.key" "${STATE_DIR}/hub-ca.pem"
-fi
+# stop the service (if any) and wipe the prior identity so the new
+# token + new endpoint are honoured, instead of crash-looping or
+# silently retrying with a stale CA / cert.
+log "stopping prior recon-agent (if any) + wiping stale identity"
+systemctl stop "${SVC_NAME}" 2>/dev/null || true
+rm -f "${STATE_DIR}/agent.pem" "${STATE_DIR}/agent.key" "${STATE_DIR}/hub-ca.pem"
 
 # ── binary ──────────────────────────────────────────────────────────────────
 TARBALL="recon-agent-linux-${ARCH}.tar.gz"

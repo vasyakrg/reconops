@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/vasyakrg/recon/internal/agent/collect"
@@ -90,6 +91,23 @@ func (c *Client) session(ctx context.Context) error {
 	stream, err := client.Connect(ctx)
 	if err != nil {
 		return fmt.Errorf("connect rpc: %w", err)
+	}
+
+	// Force the underlying TCP+TLS handshake before we declare success —
+	// gRPC NewClient is non-blocking and Connect() returns a stream
+	// before bytes hit the wire. WaitForStateChange with a 15s deadline
+	// turns "agent appears active but logs nothing" (SAN mismatch, dropped
+	// packets) into a clean error that triggers the backoff loop with a
+	// visible "agent session ended" log line.
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelConnect()
+	for state := conn.GetState(); state != connectivity.Ready; state = conn.GetState() {
+		if !conn.WaitForStateChange(connectCtx, state) {
+			return fmt.Errorf("dial timeout to %s: state=%s", c.cfg.Hub.Endpoint, state)
+		}
+		if state == connectivity.TransientFailure {
+			conn.Connect()
+		}
 	}
 
 	send := &streamSender{stream: stream}
