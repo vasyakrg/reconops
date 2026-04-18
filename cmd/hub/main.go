@@ -31,7 +31,12 @@ func main() {
 	tokenIssuer := flag.String("token-issued-by", "admin", "actor recorded for issued token")
 	agentID := flag.String("agent-id", "", "target agent_id (required for gen-token / revoke)")
 	revokeReason := flag.String("revoke-reason", "manual", "reason for revoke mode")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.Full())
+		return
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	log.Info("recon-hub starting", "version", version.Full(), "mode", *mode, "config", *cfgPath)

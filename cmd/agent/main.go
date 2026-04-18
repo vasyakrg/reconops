@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,7 +22,12 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "/etc/recon/agent.yaml", "path to agent config")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.Full())
+		return
+	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	log.Info("recon-agent starting", "version", version.Full(), "config", *cfgPath)
