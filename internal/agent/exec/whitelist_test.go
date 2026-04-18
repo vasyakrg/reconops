@@ -76,11 +76,11 @@ func TestRegisterDefaultsValidation(t *testing.T) {
 		bin  string
 		args []string
 	}{
-		{"journal_unit_inj", "/bin/journalctl", []string{"-u", "kubelet.service; rm -rf /", "--since", "1 hour ago", "-n", "10", "-o", "json", "--no-pager"}},
-		{"journal_format_inj", "/bin/journalctl", []string{"-u", "kubelet.service", "--since", "1 hour ago", "-n", "10", "-o", "csv", "--no-pager"}},
-		{"systemctl_extra", "/bin/systemctl", []string{"reboot"}},
-		{"ss_unknown_flag", "/usr/sbin/ss", []string{"-K"}},
-		{"unknown_bin", "/bin/rm", []string{"-rf", "/"}},
+		{"journal_unit_inj", "journalctl", []string{"-u", "kubelet.service; rm -rf /", "--since", "1 hour ago", "-n", "10", "-o", "json", "--no-pager"}},
+		{"journal_format_inj", "journalctl", []string{"-u", "kubelet.service", "--since", "1 hour ago", "-n", "10", "-o", "csv", "--no-pager"}},
+		{"systemctl_extra", "systemctl", []string{"reboot"}},
+		{"ss_unknown_flag", "ss", []string{"-K"}},
+		{"unknown_bin", "rm", []string{"-rf", "/"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -100,11 +100,11 @@ func TestRegisterDefaultsValidation(t *testing.T) {
 		bin  string
 		args []string
 	}{
-		{"/bin/journalctl", []string{"-u", "kubelet.service", "--since", "1 hour ago", "-n", "100", "-o", "json", "--no-pager"}},
-		{"/bin/systemctl", []string{"list-units", "--all", "--no-pager", "--no-legend", "-o", "json"}},
-		{"/usr/sbin/ss", []string{"-tulpn"}},
-		{"/sbin/ip", []string{"-json", "addr"}},
-		{"/sbin/iptables", []string{"-L", "-n", "-v"}},
+		{"journalctl", []string{"-u", "kubelet.service", "--since", "1 hour ago", "-n", "100", "-o", "json", "--no-pager"}},
+		{"systemctl", []string{"list-units", "--all", "--no-pager", "--no-legend", "-o", "json"}},
+		{"ss", []string{"-tulpn"}},
+		{"ip", []string{"-json", "addr"}},
+		{"iptables", []string{"-L", "-n", "-v"}},
 	}
 	for _, a := range allowed {
 		mu.RLock()

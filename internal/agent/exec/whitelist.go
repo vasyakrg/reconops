@@ -93,8 +93,9 @@ func DurationLike(max time.Duration) func(string) error {
 func RegisterDefaults() {
 	// systemctl list-units (used by systemd_units collector).
 	Register(Entry{
-		Bin:     "/bin/systemctl",
-		Timeout: 10 * time.Second,
+		Bin:        "systemctl",
+		Candidates: []string{"/bin/systemctl", "/usr/bin/systemctl", "/usr/sbin/systemctl"},
+		Timeout:    10 * time.Second,
 		Patterns: [][]ArgSpec{
 			// systemctl list-units --all --no-pager --no-legend -o json
 			{
@@ -116,7 +117,8 @@ func RegisterDefaults() {
 	// journalctl — used by journal_tail. Hard cap stdout at 16 MiB so a
 	// runaway --since/--lines combo cannot OOM the agent (review H2).
 	Register(Entry{
-		Bin:            "/bin/journalctl",
+		Bin:            "journalctl",
+		Candidates:     []string{"/bin/journalctl", "/usr/bin/journalctl", "/usr/sbin/journalctl"},
 		Timeout:        30 * time.Second,
 		MaxStdoutBytes: 16 * 1024 * 1024,
 		Patterns: [][]ArgSpec{
@@ -131,10 +133,12 @@ func RegisterDefaults() {
 		},
 	})
 
-	// ss — listen sockets.
+	// ss — listen sockets. -p adds process info (needs root or CAP_NET_ADMIN);
+	// agent runs with NET_ADMIN so it gets PID/comm of socket owners.
 	Register(Entry{
-		Bin:     "/usr/sbin/ss",
-		Timeout: 5 * time.Second,
+		Bin:        "ss",
+		Candidates: []string{"/usr/sbin/ss", "/usr/bin/ss", "/sbin/ss", "/bin/ss"},
+		Timeout:    5 * time.Second,
 		Patterns: [][]ArgSpec{
 			{{Value: literal("-tulpn")}},
 			{{Value: literal("-tan")}},
@@ -144,8 +148,9 @@ func RegisterDefaults() {
 
 	// ip — interfaces / routes / neighbours.
 	Register(Entry{
-		Bin:     "/sbin/ip",
-		Timeout: 5 * time.Second,
+		Bin:        "ip",
+		Candidates: []string{"/sbin/ip", "/usr/sbin/ip", "/usr/bin/ip", "/bin/ip"},
+		Timeout:    5 * time.Second,
 		Patterns: [][]ArgSpec{
 			{{Value: literal("-json")}, {Value: literal("addr")}},
 			{{Value: literal("-json")}, {Value: literal("link")}},
@@ -156,8 +161,9 @@ func RegisterDefaults() {
 
 	// iptables -L -n -v (read-only listing only).
 	Register(Entry{
-		Bin:     "/sbin/iptables",
-		Timeout: 10 * time.Second,
+		Bin:        "iptables",
+		Candidates: []string{"/sbin/iptables", "/usr/sbin/iptables", "/usr/bin/iptables", "/bin/iptables"},
+		Timeout:    10 * time.Second,
 		Patterns: [][]ArgSpec{
 			{
 				{Value: literal("-L")},

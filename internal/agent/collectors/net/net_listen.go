@@ -38,7 +38,7 @@ func (netListen) Manifest() collect.Manifest {
 }
 
 func (netListen) Run(ctx context.Context, _ collect.Params) (collect.Result, error) {
-	res, err := exec.Run(ctx, "/usr/sbin/ss", []string{"-tulpn"})
+	res, err := exec.Run(ctx, "ss", []string{"-tulpn"})
 	if err != nil {
 		return collect.Result{}, fmt.Errorf("ss: %w", err)
 	}

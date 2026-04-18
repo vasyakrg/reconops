@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	exec_ "os/exec"
 	"sync"
 	"time"
@@ -36,13 +37,27 @@ type ArgSpec struct {
 // receive. An empty Patterns slice means the binary may only be invoked with
 // zero arguments.
 type Entry struct {
-	Bin      string
-	Patterns [][]ArgSpec
+	// Bin is the logical name used as the whitelist key and as the value
+	// callers pass to Run (e.g. "ss", "journalctl"). For backwards
+	// compatibility, an absolute path with no Candidates also works as both
+	// key and the executable.
+	Bin string
+	// Candidates lists absolute path candidates for Bin, in priority order.
+	// Register resolves the first existing path. If non-empty, callers MUST
+	// invoke Run with the logical Bin name; the resolved absolute path is
+	// used internally. This handles distro-specific layouts (Ubuntu 24.04
+	// usrmerge moves /usr/sbin/ss → /usr/bin/ss).
+	Candidates []string
+	Patterns   [][]ArgSpec
 	// Timeout caps how long the binary may run regardless of caller request.
 	Timeout time.Duration
 	// MaxStdoutBytes caps captured stdout — anything beyond is truncated and
 	// the call returns ErrStdoutTruncated. 0 = use default (16 MiB).
 	MaxStdoutBytes int64
+
+	// resolved is the absolute path chosen at Register time from Candidates.
+	// Empty when Candidates is empty (Bin itself is the path).
+	resolved string
 }
 
 const defaultMaxStdoutBytes = 16 * 1024 * 1024
@@ -61,6 +76,20 @@ var (
 // collector body would itself violate the guarantee and is detected by the
 // linter (forbidden import of os/exec inside collectors/).
 func Register(e Entry) {
+	if e.Bin == "" {
+		panic("exec: Entry.Bin must be non-empty")
+	}
+	if len(e.Candidates) > 0 {
+		for _, p := range e.Candidates {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				e.resolved = p
+				break
+			}
+		}
+		// Empty resolved is allowed: Run will return a clear error rather
+		// than panic, so a missing optional binary on the host doesn't crash
+		// the agent at startup.
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if _, dup := whitelist[e.Bin]; dup {
@@ -68,6 +97,10 @@ func Register(e Entry) {
 	}
 	whitelist[e.Bin] = e
 }
+
+// ErrBinaryNotFound is returned by Run when none of the entry's Candidates
+// resolved at Register time.
+var ErrBinaryNotFound = errors.New("exec: no candidate path for binary exists on this host")
 
 // Result captures stdout, stderr, and exit code of a permitted invocation.
 type Result struct {
@@ -103,8 +136,16 @@ func Run(ctx context.Context, bin string, args []string) (Result, error) {
 		maxStdout = defaultMaxStdoutBytes
 	}
 
+	execPath := entry.resolved
+	if execPath == "" {
+		if len(entry.Candidates) > 0 {
+			return Result{}, fmt.Errorf("%w: %q tried %v", ErrBinaryNotFound, bin, entry.Candidates)
+		}
+		execPath = entry.Bin
+	}
+
 	start := time.Now()
-	cmd := exec_.CommandContext(ctx, bin, args...)
+	cmd := exec_.CommandContext(ctx, execPath, args...)
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return Result{}, err

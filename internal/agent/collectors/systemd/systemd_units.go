@@ -39,7 +39,7 @@ func (systemdUnits) Manifest() collect.Manifest {
 }
 
 func (systemdUnits) Run(ctx context.Context, _ collect.Params) (collect.Result, error) {
-	res, err := exec.Run(ctx, "/bin/systemctl",
+	res, err := exec.Run(ctx, "systemctl",
 		[]string{"list-units", "--all", "--no-pager", "--no-legend", "-o", "json"})
 	if err != nil {
 		return collect.Result{}, fmt.Errorf("systemctl: %w", err)

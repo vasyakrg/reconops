@@ -98,7 +98,7 @@ func (n netIfaces) Run(ctx context.Context, _ collect.Params) (collect.Result, e
 }
 
 func runIP(ctx context.Context, sub string) ([]byte, error) {
-	res, err := exec.Run(ctx, "/sbin/ip", []string{"-json", sub})
+	res, err := exec.Run(ctx, "ip", []string{"-json", sub})
 	if err != nil {
 		return nil, fmt.Errorf("ip %s: %w", sub, err)
 	}

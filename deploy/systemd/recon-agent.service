@@ -7,6 +7,13 @@ Wants=network-online.target
 Type=simple
 User=recon
 Group=recon
+# Supplementary groups expand read access without granting root:
+#   adm              — /var/log (nginx, mysql, mail, etc. installed 0640 root:adm)
+#   systemd-journal  — read the journal as a non-root user (journalctl -u …)
+#   systemd-network  — extra networkd state files
+# Without these, journal_tail returns 0 lines and file_read denies /var/log/*,
+# which leaves the investigator blind to the most common SRE evidence sources.
+SupplementaryGroups=adm systemd-journal systemd-network
 ExecStart=/usr/local/bin/recon-agent --config /etc/recon/agent.yaml
 Restart=on-failure
 RestartSec=5s
@@ -28,11 +35,15 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 ReadWritePaths=/var/lib/recon
 
-# Some collectors need privileged-but-read-only ops:
-# CAP_DAC_READ_SEARCH for file_read across owners; CAP_NET_RAW left out
-# (net_connect uses pure-Go TCP, ICMP requires CAP_NET_RAW which is
-# opt-in via CapabilityBoundingSet override on the operator side).
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+# Privileged-but-read-only capabilities:
+#   CAP_DAC_READ_SEARCH — file_read across owners (bypass DAC for *reads only*).
+#   CAP_NET_ADMIN       — ss -p shows PID/comm of socket owners (otherwise blank).
+#   CAP_SYS_PTRACE      — process_list reads /proc/<pid>/{stat,status,cmdline}
+#                         for processes owned by other users.
+#   CAP_NET_RAW         — pure-Go ICMP (net_connect ping fallback).
+# All of these are READ side-channels; none allow mutation of host state.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE CAP_NET_RAW
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target

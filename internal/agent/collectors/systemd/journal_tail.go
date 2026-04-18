@@ -67,7 +67,7 @@ func (journalTail) Run(ctx context.Context, p collect.Params) (collect.Result, e
 		}
 	}
 
-	res, err := exec.Run(ctx, "/bin/journalctl",
+	res, err := exec.Run(ctx, "journalctl",
 		[]string{"-u", unit, "--since", since, "-n", strconv.Itoa(lines), "-o", "json", "--no-pager"})
 	truncated := errors.Is(err, exec.ErrStdoutTruncated)
 	if err != nil && !truncated {
