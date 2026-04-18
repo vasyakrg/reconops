@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -81,7 +82,19 @@ func (c *Client) session(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("mtls: %w", err)
 	}
-	conn, err := grpc.NewClient(c.cfg.Hub.Endpoint, grpc.WithTransportCredentials(creds))
+	// Custom dialer pinned to tcp4. gRPC's default dialer happy-eyeballs
+	// IPv6 first when the host has any v6 route configured, and we've seen
+	// VMs return ENETUNREACH for the v6 attempt even though `nc -vz` over
+	// v4 succeeds. Forcing tcp4 sidesteps that asymmetry — the hub
+	// endpoint is always a v4 host:port in the install one-liner.
+	dialer := func(ctx context.Context, addr string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp4", addr)
+	}
+	conn, err := grpc.NewClient(c.cfg.Hub.Endpoint,
+		grpc.WithTransportCredentials(creds),
+		grpc.WithContextDialer(dialer),
+	)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
