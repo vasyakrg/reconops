@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"testing"
 
@@ -52,6 +53,26 @@ func TestFileReadDenied(t *testing.T) {
 	}
 	if _, err := c.Run(context.Background(), collect.Params{"path": "../etc/passwd"}); err == nil {
 		t.Fatal("expected absolute-path requirement")
+	}
+}
+
+func TestFileReadRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := dir + "/target"
+	link := "/var/log/recon_test_symlink_probe"
+	if err := os.WriteFile(target, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Try to create symlink in /var/log; if no permission, skip — the
+	// security property is still asserted by the lstat check unconditionally.
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink at %s: %v", link, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+
+	c := fileRead{}
+	if _, err := c.Run(context.Background(), collect.Params{"path": link}); err == nil {
+		t.Fatal("expected refusal of symlink path")
 	}
 }
 

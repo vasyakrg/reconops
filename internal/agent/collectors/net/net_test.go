@@ -62,6 +62,41 @@ func TestNetConnectMissingParam(t *testing.T) {
 	}
 }
 
+func TestDisallowedTarget(t *testing.T) {
+	cases := map[string]bool{
+		"127.0.0.1:80":       false, // loopback OK (legitimate diag)
+		"169.254.169.254:80": true,  // AWS metadata
+		"169.254.0.1:22":     true,  // link-local
+		"fe80::1:80":         true,  // ipv6 link-local
+		"224.0.0.1:80":       true,  // multicast
+		"0.0.0.0:80":         true,  // unspecified
+		"example.com:443":    false, // hostname — pre-resolution path allowed
+		"not_a_target":       true,  // bad shape
+	}
+	for target, shouldBlock := range cases {
+		got := disallowedTarget(target)
+		blocked := got != ""
+		if blocked != shouldBlock {
+			t.Errorf("disallowedTarget(%q) = %q, blocked=%v, want blocked=%v", target, got, blocked, shouldBlock)
+		}
+	}
+}
+
+func TestNetConnectBlocksMetadata(t *testing.T) {
+	c := netConnect{}
+	res, err := c.Run(context.Background(), collect.Params{"targets": "169.254.169.254:80,127.0.0.1:1", "timeout": "100ms"})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data := res.Data.(ConnectResult)
+	if len(data.Probes) != 2 {
+		t.Fatalf("want 2 probes, got %d", len(data.Probes))
+	}
+	if data.Probes[0].OK || data.Probes[0].Error == "" {
+		t.Errorf("metadata target should be blocked, got %+v", data.Probes[0])
+	}
+}
+
 func TestNetConnectFailingTarget(t *testing.T) {
 	c := netConnect{}
 	res, err := c.Run(context.Background(), collect.Params{"targets": "127.0.0.1:1", "timeout": "200ms"})

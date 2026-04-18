@@ -36,6 +36,18 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
+	// Verify foreign_keys pragma actually took effect — modernc.org/sqlite
+	// honours it via DSN, but a future driver swap could silently drop FK
+	// enforcement, leaving cascade-delete broken.
+	var fk int
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("check foreign_keys pragma: %w", err)
+	}
+	if fk != 1 {
+		_ = db.Close()
+		return nil, fmt.Errorf("foreign_keys pragma is %d, want 1 (cascade-delete won't work)", fk)
+	}
 	s := &Store{db: db}
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()

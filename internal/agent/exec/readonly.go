@@ -8,9 +8,11 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	exec_ "os/exec"
 	"sync"
 	"time"
@@ -38,7 +40,16 @@ type Entry struct {
 	Patterns [][]ArgSpec
 	// Timeout caps how long the binary may run regardless of caller request.
 	Timeout time.Duration
+	// MaxStdoutBytes caps captured stdout — anything beyond is truncated and
+	// the call returns ErrStdoutTruncated. 0 = use default (16 MiB).
+	MaxStdoutBytes int64
 }
+
+const defaultMaxStdoutBytes = 16 * 1024 * 1024
+
+// ErrStdoutTruncated is returned when a command produced more bytes than the
+// entry's MaxStdoutBytes cap. The truncated stdout is still returned.
+var ErrStdoutTruncated = errors.New("exec: stdout exceeded MaxStdoutBytes")
 
 var (
 	mu        sync.RWMutex
@@ -87,21 +98,48 @@ func Run(ctx context.Context, bin string, args []string) (Result, error) {
 		defer cancel()
 	}
 
+	maxStdout := entry.MaxStdoutBytes
+	if maxStdout <= 0 {
+		maxStdout = defaultMaxStdoutBytes
+	}
+
 	start := time.Now()
 	cmd := exec_.CommandContext(ctx, bin, args...)
-	stdout, err := cmd.Output()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return Result{}, err
+	}
+	stderrBuf := &bytes.Buffer{}
+	cmd.Stderr = stderrBuf
+	if err := cmd.Start(); err != nil {
+		return Result{}, err
+	}
+	limited := &io.LimitedReader{R: stdoutPipe, N: maxStdout + 1}
+	stdout, _ := io.ReadAll(limited)
+	truncated := false
+	if int64(len(stdout)) > maxStdout {
+		stdout = stdout[:maxStdout]
+		truncated = true
+		// Drain remaining stdout so the child does not hang on a full pipe.
+		_, _ = io.Copy(io.Discard, stdoutPipe)
+	}
+	waitErr := cmd.Wait()
+
 	res := Result{
 		Stdout:   stdout,
+		Stderr:   stderrBuf.Bytes(),
 		ExitCode: cmd.ProcessState.ExitCode(),
 		Duration: time.Since(start),
 	}
+	if truncated {
+		return res, ErrStdoutTruncated
+	}
 	var ee *exec_.ExitError
-	if errors.As(err, &ee) {
-		res.Stderr = ee.Stderr
+	if errors.As(waitErr, &ee) {
 		// Non-zero exit code is data for the caller, not an error here.
 		return res, nil
 	}
-	return res, err
+	return res, waitErr
 }
 
 func validateArgs(e Entry, args []string) error {

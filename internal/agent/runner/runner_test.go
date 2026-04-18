@@ -204,6 +204,51 @@ func TestCancel(t *testing.T) {
 	}
 }
 
+func TestDuplicateRequestIDRejected(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	register(t, "dup-1", func(_ context.Context, _ collect.Params) (collect.Result, error) {
+		close(started)
+		<-finish
+		return collect.Result{Data: 1}, nil
+	})
+	r := newRunner(t)
+	fs := &fakeSender{}
+	// First request — will block in collector body until we close `finish`.
+	r.Handle(context.Background(), &reconpb.CollectRequest{RequestId: "dup", Collector: "dup-1"}, fs)
+	<-started
+	// Second request with same RequestId — must be rejected immediately with
+	// STATUS_ERROR, NOT cancel/overwrite the first.
+	r.Handle(context.Background(), &reconpb.CollectRequest{RequestId: "dup", Collector: "dup-1"}, fs)
+	// Wait briefly for the rejection result.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(fs.results()) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rs := fs.results()
+	if len(rs) < 1 {
+		t.Fatal("no rejection result")
+	}
+	if rs[0].Status != reconpb.Status_STATUS_ERROR {
+		t.Fatalf("first rejection status=%v", rs[0].Status)
+	}
+	close(finish)
+	// Now the original should complete.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(fs.results()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(fs.results()) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(fs.results()))
+	}
+}
+
 func TestSendErrorDoesNotPanic(t *testing.T) {
 	register(t, "ok-2", func(_ context.Context, _ collect.Params) (collect.Result, error) {
 		return collect.Result{Data: 1}, nil

@@ -297,7 +297,20 @@ func (s *Server) applyHello(ctx context.Context, hello *reconpb.Hello, fingerpri
 	}
 	mans := make([]store.CollectorManifest, 0, len(hello.Collectors))
 	for _, m := range hello.Collectors {
-		body, _ := json.Marshal(m)
+		// Persist a normalized manifest envelope so the Investigator (Week 3)
+		// can extract params_schema as the LLM tool's input_schema directly,
+		// without re-parsing a wire-shape proto blob.
+		envelope := map[string]any{
+			"name":          m.Name,
+			"version":       m.Version,
+			"category":      m.Category,
+			"description":   m.Description,
+			"reads":         m.Reads,
+			"requires":      m.Requires,
+			"params_schema": rawJSONOrNull(m.ParamsSchema),
+			"output_schema": rawJSONOrNull(m.OutputSchema),
+		}
+		body, _ := json.Marshal(envelope)
 		mans = append(mans, store.CollectorManifest{
 			HostID:       hello.AgentId,
 			Name:         m.Name,
@@ -306,6 +319,18 @@ func (s *Server) applyHello(ctx context.Context, hello *reconpb.Hello, fingerpri
 		})
 	}
 	return s.store.ReplaceCollectorManifests(ctx, hello.AgentId, mans)
+}
+
+// rawJSONOrNull returns the bytes as json.RawMessage when valid JSON, else
+// returns nil so the resulting marshalled envelope contains JSON null.
+func rawJSONOrNull(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	if !json.Valid(b) {
+		return nil
+	}
+	return json.RawMessage(b)
 }
 
 func (s *Server) registerStream(agentID string, h *streamHandle) {

@@ -170,6 +170,10 @@ func (r *Runner) OnResult(agentID string, res *reconpb.CollectResult) {
 		r.log.Warn("result from wrong agent", "request_id", res.RequestId, "expected", pt.hostID, "got", agentID)
 		return
 	}
+	// (C1) close any artifact files that never received a Last=true chunk —
+	// e.g. agent's streamArtifact errored mid-way. Without this, the *os.File
+	// stays open until process restart (fd leak).
+	r.closeOpenArtifacts(res.RequestId)
 	status := mapStatus(res.Status)
 	ctx := context.Background()
 	if err := r.store.FinishTask(ctx, res.RequestId, status, res.DurationMs, res.Error); err != nil {
@@ -189,6 +193,22 @@ func (r *Runner) OnResult(agentID string, res *reconpb.CollectResult) {
 	}
 	r.unregister(res.RequestId)
 	r.log.Info("task finished", "task_id", res.RequestId, "agent", agentID, "status", status, "duration_ms", res.DurationMs)
+}
+
+// closeOpenArtifacts force-closes and unregisters every open artifact file
+// associated with taskID. Called from OnResult so a missed Last=true chunk
+// never leaks an *os.File handle.
+func (r *Runner) closeOpenArtifacts(taskID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, open := range r.openArts {
+		if open.taskID != taskID {
+			continue
+		}
+		_ = open.file.Close()
+		delete(r.openArts, id)
+		r.log.Warn("artifact closed without Last=true chunk", "task_id", taskID, "name", open.name)
+	}
 }
 
 // OnArtifact implements api.ResultSink.

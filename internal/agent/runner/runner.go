@@ -83,7 +83,19 @@ func (r *Runner) run(parent context.Context, req *reconpb.CollectRequest, send S
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
+	// (C2) Reject duplicate request_id instead of overwriting the existing
+	// cancel — losing the cancel handle would orphan the in-flight goroutine.
 	r.mu.Lock()
+	if _, dup := r.running[req.RequestId]; dup {
+		r.mu.Unlock()
+		r.log.Warn("duplicate request_id rejected", "request_id", req.RequestId, "collector", req.Collector)
+		_ = send.Send(&reconpb.AgentMsg{Payload: &reconpb.AgentMsg_Result{Result: &reconpb.CollectResult{
+			RequestId: req.RequestId,
+			Status:    reconpb.Status_STATUS_ERROR,
+			Error:     "duplicate request_id — already in flight",
+		}}})
+		return
+	}
 	r.running[req.RequestId] = cancel
 	r.mu.Unlock()
 	defer func() {

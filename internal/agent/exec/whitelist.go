@@ -113,10 +113,12 @@ func RegisterDefaults() {
 		},
 	})
 
-	// journalctl — used by journal_tail.
+	// journalctl — used by journal_tail. Hard cap stdout at 16 MiB so a
+	// runaway --since/--lines combo cannot OOM the agent (review H2).
 	Register(Entry{
-		Bin:     "/bin/journalctl",
-		Timeout: 30 * time.Second,
+		Bin:            "/bin/journalctl",
+		Timeout:        30 * time.Second,
+		MaxStdoutBytes: 16 * 1024 * 1024,
 		Patterns: [][]ArgSpec{
 			// journalctl -u <unit> --since <ts> -n <N> -o json --no-pager
 			{

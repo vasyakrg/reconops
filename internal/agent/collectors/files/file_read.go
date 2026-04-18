@@ -79,6 +79,24 @@ func (fileRead) Run(_ context.Context, p collect.Params) (collect.Result, error)
 	if !pathAllowed(clean) {
 		return collect.Result{}, fmt.Errorf("path %q not in allowlist", clean)
 	}
+	// (H1) Refuse to follow symlinks — an attacker with write access inside
+	// any allowlist directory could symlink to /etc/shadow and bypass the
+	// denylist (which is purely lexical on the input path). Lstat the leaf
+	// AND verify EvalSymlinks didn't change the path.
+	li, err := os.Lstat(clean)
+	if err != nil {
+		return collect.Result{}, fmt.Errorf("lstat: %w", err)
+	}
+	if li.Mode()&os.ModeSymlink != 0 {
+		return collect.Result{}, fmt.Errorf("path %q is a symlink — refusing to follow", clean)
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return collect.Result{}, fmt.Errorf("eval symlinks: %w", err)
+	}
+	if resolved != clean {
+		return collect.Result{}, fmt.Errorf("path %q resolves to %q via symlinks — refusing", clean, resolved)
+	}
 
 	maxBytes := 65536
 	if s := p["max_bytes"]; s != "" {

@@ -3,6 +3,7 @@ package systemd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -68,13 +69,20 @@ func (journalTail) Run(ctx context.Context, p collect.Params) (collect.Result, e
 
 	res, err := exec.Run(ctx, "/bin/journalctl",
 		[]string{"-u", unit, "--since", since, "-n", strconv.Itoa(lines), "-o", "json", "--no-pager"})
-	if err != nil {
+	truncated := errors.Is(err, exec.ErrStdoutTruncated)
+	if err != nil && !truncated {
 		return collect.Result{}, fmt.Errorf("journalctl: %w", err)
 	}
 
 	summary, hints := summarizeJournal(unit, since, res.Stdout)
 	artName := fmt.Sprintf("journal_%s.jsonl", sanitizeUnit(unit))
 	summary.ArtifactName = artName
+	if truncated {
+		hints = append(hints, collect.Hint{
+			Severity: "warn", Code: "journal.truncated",
+			Message: "journal output exceeded 16 MiB cap and was truncated; reduce --lines or narrow --since",
+		})
+	}
 
 	return collect.Result{
 		Data:  summary,
