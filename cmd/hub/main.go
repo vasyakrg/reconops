@@ -201,6 +201,7 @@ func main() {
 	install := web.InstallConfig{
 		ReleaseRepoURL:    cfg.Install.ReleaseRepoURL,
 		AgentGRPCEndpoint: cfg.Install.AgentGRPCEndpoint,
+		GRPCPort:          cfg.Install.GRPCPort,
 		Version:           cfg.Install.Version,
 	}
 	webSrv, err := web.NewServer(st, hr, loop, auth, install, log.With("comp", "web"))

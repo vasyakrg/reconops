@@ -31,7 +31,12 @@ runner:
 
 install:
   release_repo_url: https://github.com/vasyakrg/reconops
-  agent_grpc_endpoint: hub:9443
+  # "auto" derives host:port from the install URL's request hostname
+  # (honours nginx X-Forwarded-Host) plus grpc_port. Pin to an explicit
+  # value (e.g. "hub.example.com:9443") if agents and the operator
+  # browser don't share the same hostname.
+  agent_grpc_endpoint: auto
+  grpc_port: 9443
   # Pull the most recent published release. Pin to a tag (e.g. "0.1.0")
   # for reproducible installs.
   version: latest

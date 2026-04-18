@@ -46,6 +46,23 @@ func (s *Server) handleInstallAgentScript(w http.ResponseWriter, r *http.Request
 	if hubEP == "" {
 		hubEP = s.install.AgentGRPCEndpoint
 	}
+	// Auto-derive when the operator left agent_grpc_endpoint at the magic
+	// value "auto": take the hostname from the request (honouring nginx
+	// X-Forwarded-Host) and append the configured grpc port. Lets the
+	// install URL work from any host that can resolve the same name as
+	// the operator's browser, without baking a deployment-specific
+	// hostname into hub.yaml.
+	if hubEP == "" || hubEP == "auto" {
+		host := r.Header.Get("X-Forwarded-Host")
+		if host == "" {
+			host = r.Host
+		}
+		// Strip port from the request host — we want only the hostname.
+		if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i+1:], "]") {
+			host = host[:i]
+		}
+		hubEP = fmt.Sprintf("%s:%d", host, s.install.GRPCPort)
+	}
 	// Per-request version override: the operator can pin a specific release
 	// without changing hub.yaml by passing ?version=v0.2.3 in the URL.
 	cfg := s.install

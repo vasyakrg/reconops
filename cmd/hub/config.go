@@ -29,9 +29,15 @@ type InstallConfig struct {
 	//   v0.1.0   → <repo>/releases/download/v0.1.0/recon-agent-linux-<arch>.tar.gz
 	ReleaseRepoURL string `yaml:"release_repo_url"`
 	// AgentGRPCEndpoint is host:port the agent should configure as its
-	// hub.endpoint. Different from the operator UI URL — the hub gRPC port
-	// (9443 by default) is what agents talk to over mTLS.
+	// hub.endpoint. Set to "auto" (or leave empty) to derive from the
+	// install URL's request hostname plus GRPCPort — works on the common
+	// compose / single-VM case where the UI and the gRPC port live on the
+	// same host. Otherwise pin to a hostname agents can resolve, e.g.
+	// "hub.example.com:9443".
 	AgentGRPCEndpoint string `yaml:"agent_grpc_endpoint"`
+	// GRPCPort is the port number agents dial when AgentGRPCEndpoint is
+	// "auto"-derived. Defaults to 9443.
+	GRPCPort int `yaml:"grpc_port"`
 	// Version selects which release the install script pulls from. Defaults
 	// to "latest" so operators get the most recent published release;
 	// override to a tag (e.g. "0.1.0") to pin a specific build.
@@ -128,7 +134,10 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Install.ReleaseRepoURL = envOr("RECON_INSTALL_RELEASE_REPO", "")
 	}
 	if cfg.Install.AgentGRPCEndpoint == "" {
-		cfg.Install.AgentGRPCEndpoint = envOr("RECON_INSTALL_GRPC_ENDPOINT", "")
+		cfg.Install.AgentGRPCEndpoint = envOr("RECON_INSTALL_GRPC_ENDPOINT", "auto")
+	}
+	if cfg.Install.GRPCPort == 0 {
+		cfg.Install.GRPCPort = 9443
 	}
 	return cfg, nil
 }

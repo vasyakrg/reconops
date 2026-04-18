@@ -46,14 +46,21 @@ type Server struct {
 // install ("latest" or a tag like "0.1.0"). RepoURL + Endpoint must both be
 // set for the /hosts "Quick install" form to render.
 type InstallConfig struct {
-	ReleaseRepoURL    string
+	ReleaseRepoURL string
+	// AgentGRPCEndpoint is host:port the agent dials. Set to "auto" (or
+	// leave empty) to derive from the install URL's request hostname plus
+	// GRPCPort — works when the same machine hosts both the UI and the
+	// gRPC port, which is the common compose / single-VM case.
 	AgentGRPCEndpoint string
+	GRPCPort          int
 	Version           string
 }
 
 // Enabled returns true when the operator filled in the install knobs.
+// AgentGRPCEndpoint may be empty / "auto" — we fall back to the request
+// host in that case.
 func (i InstallConfig) Enabled() bool {
-	return i.ReleaseRepoURL != "" && i.AgentGRPCEndpoint != ""
+	return i.ReleaseRepoURL != ""
 }
 
 // DownloadBase returns the directory the install script wgets the tarball
