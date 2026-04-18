@@ -1,0 +1,21 @@
+# Don't ship local state, build artefacts, IDE noise, or secrets into the
+# build context — keeps `docker build` fast and removes accidental leaks.
+
+bin/
+deploy/dev/state/
+*.db
+*.db-shm
+*.db-wal
+.env
+.git/
+.idea/
+.vscode/
+.DS_Store
+*.test
+*.out
+coverage.*
+
+# Don't rebuild the image just because the docs changed.
+DOCS/
+README.md
+CHANGELOG.md

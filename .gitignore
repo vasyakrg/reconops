@@ -9,3 +9,6 @@ deploy/dev/state/
 *.db
 *.db-shm
 *.db-wal
+
+# Local secrets — see .env.example for the template.
+.env

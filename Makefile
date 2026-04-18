@@ -105,3 +105,37 @@ dist-agent:
 .PHONY: clean
 clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)
+
+# ── docker compose ───────────────────────────────────────────────────────────
+COMPOSE ?= docker compose
+
+.PHONY: docker-build
+docker-build: ## Build the recon-hub docker image
+	$(COMPOSE) build hub
+
+.PHONY: compose-up
+compose-up: ## Start the hub stack in the background
+	@test -f .env || (echo "missing .env — copy from .env.example and fill in" && exit 1)
+	$(COMPOSE) up -d hub
+
+.PHONY: compose-down
+compose-down: ## Stop the stack (state volume is preserved)
+	$(COMPOSE) down
+
+.PHONY: compose-logs
+compose-logs: ## Tail hub logs
+	$(COMPOSE) logs -f hub
+
+.PHONY: compose-gen-hash
+compose-gen-hash: ## Generate a bcrypt hash via the hub container; PASSWORD=… required
+	@test -n "$(PASSWORD)" || (echo "set PASSWORD=…" && exit 1)
+	$(COMPOSE) run --rm --no-deps \
+	  -e RECON_ADMIN_PASSWORD='$(PASSWORD)' \
+	  --entrypoint /usr/local/bin/recon-hub hub --mode gen-password-hash
+
+.PHONY: compose-gen-token
+compose-gen-token: ## Issue a bootstrap token; AGENT_ID=… required, TTL=24h optional
+	@test -n "$(AGENT_ID)" || (echo "set AGENT_ID=…" && exit 1)
+	$(COMPOSE) exec hub /usr/local/bin/recon-hub \
+	  --config /etc/recon/hub.yaml --mode gen-token \
+	  --agent-id "$(AGENT_ID)" --token-ttl "$${TTL:-24h}"

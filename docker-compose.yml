@@ -1,0 +1,44 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${RECON_VERSION:-docker}
+        COMMIT: ${RECON_COMMIT:-unknown}
+    image: recon-hub:${RECON_VERSION:-latest}
+    container_name: recon-hub
+    restart: unless-stopped
+    env_file:
+      # Optional — compose tolerates a missing file with `required: false`,
+      # so `docker compose config` works on a fresh checkout. Copy from
+      # .env.example before `compose up`.
+      - path: .env
+        required: false
+    environment:
+      # Honour Forwarded-Proto when fronted by an external nginx (the
+      # operator can drop the proxy in front of port 8080 themselves).
+      RECON_BEHIND_TLS_PROXY: ${RECON_BEHIND_TLS_PROXY:-false}
+    volumes:
+      # Persistent state: SQLite db, artifacts, generated CA, agent
+      # certificates, audit log. Survives `docker compose down -v` only
+      # if you do NOT pass -v.
+      - recon-state:/var/lib/recon
+      # Hub config, mounted read-only. Edit on the host, restart container.
+      - ./deploy/docker/hub.yaml:/etc/recon/hub.yaml:ro
+    ports:
+      # HTTP UI. Bind to 127.0.0.1 in production and put nginx in front;
+      # leave open for local dev.
+      - "${RECON_HTTP_PORT:-8080}:8080"
+      # gRPC for agents (mTLS). Must be reachable from every agent host.
+      - "${RECON_GRPC_PORT:-9443}:9443"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  recon-state:
+    driver: local

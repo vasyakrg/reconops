@@ -1,0 +1,27 @@
+server:
+  # Bind to all interfaces inside the container; docker publishes specific
+  # ports on the host (see docker-compose.yml).
+  grpc_addr: "0.0.0.0:9443"
+  http_addr: "0.0.0.0:8080"
+
+  # SAN list baked into the bootstrap CA's server cert. Add your real
+  # hostname/IP here before the first start — they cannot be edited later
+  # without regenerating /var/lib/recon/ca/ca.pem.
+  dns_names: ["localhost", "recon-hub"]
+  ip_addrs: ["127.0.0.1"]
+
+storage:
+  db_path: /var/lib/recon/recon.db
+  artifact_dir: /var/lib/recon/artifacts
+  ca_dir: /var/lib/recon/ca
+  retention_days: 7
+
+llm:
+  base_url: https://openrouter.ai/api/v1
+  model: anthropic/claude-sonnet-4.5
+  api_key_env: RECON_LLM_API_KEY
+  max_steps_per_investigation: 40
+  max_tokens_per_investigation: 500000
+
+runner:
+  per_agent_rpm: 30
