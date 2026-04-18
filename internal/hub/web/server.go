@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/vasyakrg/recon/internal/common/version"
+	"github.com/vasyakrg/recon/internal/hub/investigator"
 	hubrunner "github.com/vasyakrg/recon/internal/hub/runner"
 	"github.com/vasyakrg/recon/internal/hub/store"
 )
@@ -27,19 +28,21 @@ var tplFS embed.FS
 type Server struct {
 	store  *store.Store
 	runner *hubrunner.Runner
+	loop   *investigator.Loop // optional — nil when LLM is not configured
 	tpl    *template.Template
 	log    *slog.Logger
 }
 
-func NewServer(st *store.Store, runner *hubrunner.Runner, log *slog.Logger) (*Server, error) {
+func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loop, log *slog.Logger) (*Server, error) {
 	tpl, err := template.New("").Funcs(template.FuncMap{
 		"prettyJSON": prettyJSON,
 		"truncate":   truncate,
+		"bytesOf":    func(s string) []byte { return []byte(s) },
 	}).ParseFS(tplFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
-	return &Server{store: st, runner: runner, tpl: tpl, log: log}, nil
+	return &Server{store: st, runner: runner, loop: loop, tpl: tpl, log: log}, nil
 }
 
 func (s *Server) Routes() http.Handler {
@@ -55,6 +58,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/runs", s.handleRunsList)
 	mux.HandleFunc("/runs/", s.handleRunsDetail) // /runs/{id} | /runs/{id}/artifact?...
 	mux.HandleFunc("/runs/new", s.handleRunsNew) // POST: launch a run
+	mux.HandleFunc("/investigations", s.handleInvestigationsList)
+	mux.HandleFunc("/investigations/", s.handleInvestigationsDetail)      // /investigations/{id}
+	mux.HandleFunc("/investigations/new", s.handleInvestigationsNew)      // POST: start
+	mux.HandleFunc("/investigations/decide", s.handleInvestigationDecide) // POST: approve/skip/end
 	return mux
 }
 
@@ -298,4 +305,101 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ---- Investigations -----------------------------------------------------
+
+func (s *Server) handleInvestigationsList(w http.ResponseWriter, r *http.Request) {
+	invs, err := s.store.ListInvestigations(r.Context(), 100)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.render(w, "investigations_list", map[string]any{
+		"Title":      "Investigations",
+		"Version":    version.Version,
+		"Items":      invs,
+		"LLMEnabled": s.loop != nil,
+	})
+}
+
+func (s *Server) handleInvestigationsNew(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.loop == nil {
+		http.Error(w, "investigator disabled — set RECON_LLM_API_KEY and restart hub", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	goal := strings.TrimSpace(r.FormValue("goal"))
+	if goal == "" {
+		http.Error(w, "goal required", http.StatusBadRequest)
+		return
+	}
+	id, err := s.loop.Start(r.Context(), goal, "operator")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
+}
+
+func (s *Server) handleInvestigationsDetail(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/investigations/")
+	if rest == "" || rest == "new" || rest == "decide" {
+		http.NotFound(w, r)
+		return
+	}
+	id := rest
+	inv, err := s.store.GetInvestigation(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	tcs, _ := s.store.ListToolCalls(r.Context(), id)
+	findings, _ := s.store.ListFindings(r.Context(), id)
+	pending, _ := s.store.PendingToolCall(r.Context(), id)
+
+	s.render(w, "investigation_detail", map[string]any{
+		"Title":      "Investigation " + id,
+		"Version":    version.Version,
+		"Inv":        inv,
+		"ToolCalls":  tcs,
+		"Findings":   findings,
+		"Pending":    pending,
+		"LLMEnabled": s.loop != nil,
+	})
+}
+
+func (s *Server) handleInvestigationDecide(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.loop == nil {
+		http.Error(w, "investigator disabled", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("investigation_id")
+	decision := r.FormValue("decision")
+	if id == "" || decision == "" {
+		http.Error(w, "investigation_id and decision required", http.StatusBadRequest)
+		return
+	}
+	if err := s.loop.Decide(r.Context(), id, decision, "operator"); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }

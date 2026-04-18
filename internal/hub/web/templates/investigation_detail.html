@@ -1,0 +1,82 @@
+{{define "investigation_detail"}}
+<h2>Investigation <code>{{.Inv.ID}}</code></h2>
+<p class="small">
+  status <span class="badge badge-{{if eq .Inv.Status "active"}}running{{else if eq .Inv.Status "done"}}ok{{else if eq .Inv.Status "aborted"}}error{{else}}info{{end}}">{{.Inv.Status}}</span>
+  · model <code>{{.Inv.Model}}</code>
+  · steps {{.Inv.TotalToolCalls}}
+  · tokens {{.Inv.TotalPromptTokens}} prompt + {{.Inv.TotalCompletionTokens}} completion
+  · created {{.Inv.CreatedAt.Format "2006-01-02 15:04:05"}} UTC
+</p>
+
+<h3>Goal</h3>
+<blockquote>{{.Inv.Goal}}</blockquote>
+
+{{if .Pending}}
+<h3>Pending tool call — your decision</h3>
+<div style="border:1px solid #ddd; padding:8px; background:#fffceb;">
+  <p><strong>Tool:</strong> <code>{{.Pending.Tool}}</code></p>
+  {{if .Pending.Rationale}}<p><em>{{.Pending.Rationale}}</em></p>{{end}}
+  <details open><summary>Input</summary><pre>{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</pre></details>
+  <form method="post" action="/investigations/decide" class="inline">
+    <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+    <button type="submit" name="decision" value="approve">Approve</button>
+    <button type="submit" name="decision" value="skip">Skip</button>
+    <button type="submit" name="decision" value="end">End investigation</button>
+  </form>
+</div>
+{{else if eq .Inv.Status "active"}}
+<p class="small">⏳ Waiting for the model — refresh in a moment.</p>
+{{end}}
+
+<h3>Findings</h3>
+{{if .Findings}}
+<table>
+  <thead><tr><th>Severity</th><th>Code</th><th>Message</th><th>Evidence</th></tr></thead>
+  <tbody>
+  {{range .Findings}}
+    <tr>
+      <td><span class="badge badge-{{if eq .Severity "error"}}error{{else if eq .Severity "warn"}}pending{{else}}info{{end}}">{{.Severity}}</span></td>
+      <td><code>{{.Code}}</code></td>
+      <td>{{.Message}}</td>
+      <td><pre>{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No findings yet.</p>
+{{end}}
+
+<h3>Tool-call timeline</h3>
+{{if .ToolCalls}}
+<table>
+  <thead><tr><th>#</th><th>Tool</th><th>Status</th><th>Rationale</th><th>Result</th></tr></thead>
+  <tbody>
+  {{range .ToolCalls}}
+    <tr>
+      <td>{{.Seq}}</td>
+      <td><code>{{.Tool}}</code></td>
+      <td><span class="badge badge-{{if eq .Status "executed"}}ok{{else if eq .Status "pending"}}pending{{else if eq .Status "approved"}}running{{else}}info{{end}}">{{.Status}}</span></td>
+      <td class="small">{{.Rationale}}</td>
+      <td>
+        <details><summary>Input</summary><pre>{{prettyJSON (printf "%s" .InputJSON | bytesOf)}}</pre></details>
+        {{if .ResultJSON.Valid}}
+          <details><summary>Result</summary><pre>{{prettyJSON (printf "%s" .ResultJSON.String | bytesOf)}}</pre></details>
+        {{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No tool calls recorded yet.</p>
+{{end}}
+
+{{if .Inv.SummaryJSON.Valid}}
+<h3>Summary (mark_done)</h3>
+<pre>{{prettyJSON (printf "%s" .Inv.SummaryJSON.String | bytesOf)}}</pre>
+{{end}}
+
+<p class="small"><a href="/investigations/{{.Inv.ID}}">refresh</a> ·
+{{if eq .Inv.Status "active"}}<em>auto-poll the page until status flips to done/aborted</em>{{end}}</p>
+{{end}}

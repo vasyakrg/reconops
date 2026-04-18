@@ -13,6 +13,21 @@ type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	Storage StorageConfig `yaml:"storage"`
 	Auth    AuthConfig    `yaml:"auth"`
+	LLM     LLMConfig     `yaml:"llm"`
+}
+
+// LLMConfig drives the investigator's Claude / OpenAI-compatible client.
+// Defaults target OpenRouter; any of base_url / model / api_key_env may be
+// overridden in hub.yaml. The actual API key is always read from env at
+// runtime so it never lands in the config file (PROJECT.md §9.5).
+type LLMConfig struct {
+	BaseURL                   string `yaml:"base_url"`
+	Model                     string `yaml:"model"`
+	APIKeyEnv                 string `yaml:"api_key_env"`
+	MaxStepsPerInvestigation  int    `yaml:"max_steps_per_investigation"`
+	MaxTokensPerInvestigation int    `yaml:"max_tokens_per_investigation"`
+	HTTPReferer               string `yaml:"http_referer"` // OpenRouter ranking header (optional)
+	XTitle                    string `yaml:"x_title"`      // OpenRouter ranking header (optional)
 }
 
 type ServerConfig struct {
@@ -63,7 +78,31 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Storage.RetentionDays == 0 {
 		cfg.Storage.RetentionDays = 30
 	}
+	// LLM defaults — env vars always win over yaml; yaml wins over compiled
+	// defaults. Final concrete values are resolved in main via env lookup.
+	if cfg.LLM.BaseURL == "" {
+		cfg.LLM.BaseURL = envOr("RECON_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+	}
+	if cfg.LLM.Model == "" {
+		cfg.LLM.Model = envOr("RECON_LLM_MODEL", "anthropic/claude-sonnet-4.5")
+	}
+	if cfg.LLM.APIKeyEnv == "" {
+		cfg.LLM.APIKeyEnv = "RECON_LLM_API_KEY"
+	}
+	if cfg.LLM.MaxStepsPerInvestigation == 0 {
+		cfg.LLM.MaxStepsPerInvestigation = 40
+	}
+	if cfg.LLM.MaxTokensPerInvestigation == 0 {
+		cfg.LLM.MaxTokensPerInvestigation = 500_000
+	}
 	return cfg, nil
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func (c *Config) ParsedIPs() []net.IP {

@@ -16,6 +16,8 @@ import (
 	"github.com/vasyakrg/recon/internal/common/version"
 	"github.com/vasyakrg/recon/internal/hub/api"
 	"github.com/vasyakrg/recon/internal/hub/auth"
+	"github.com/vasyakrg/recon/internal/hub/investigator"
+	"github.com/vasyakrg/recon/internal/hub/llm"
 	hubrunner "github.com/vasyakrg/recon/internal/hub/runner"
 	"github.com/vasyakrg/recon/internal/hub/store"
 	"github.com/vasyakrg/recon/internal/hub/web"
@@ -107,6 +109,21 @@ func main() {
 	hr := hubrunner.New(st, apiSrv, cfg.Storage.ArtifactDir, log.With("comp", "runner"))
 	apiSrv.SetSink(hr)
 
+	// LLM client is optional — if no API key is configured, the
+	// investigator endpoints will return a clear startup-time error when
+	// invoked, but the hub still serves /hosts/{id} + /runs.
+	var loop *investigator.Loop
+	llmClient, llmErr := llm.NewFromEnv(cfg.LLM.BaseURL, cfg.LLM.Model, cfg.LLM.APIKeyEnv, cfg.LLM.HTTPReferer, cfg.LLM.XTitle)
+	if llmErr != nil {
+		log.Warn("LLM client disabled (investigator endpoints will refuse)", "err", llmErr,
+			"model", cfg.LLM.Model, "base_url", cfg.LLM.BaseURL, "api_key_env", cfg.LLM.APIKeyEnv)
+	} else {
+		log.Info("LLM client ready", "model", llmClient.Model(), "base_url", cfg.LLM.BaseURL)
+		loop = investigator.NewLoop(st, llmClient, hr, apiSrv.IsOnline, apiSrv.OnlineAgents,
+			cfg.LLM.MaxStepsPerInvestigation, cfg.LLM.MaxTokensPerInvestigation,
+			log.With("comp", "investigator"))
+	}
+
 	lis, gsrv, err := apiSrv.Listen(cfg.Server.GRPCAddr)
 	if err != nil {
 		log.Error("grpc listen", "err", err)
@@ -124,7 +141,7 @@ func main() {
 		gsrv.GracefulStop()
 	}()
 
-	webSrv, err := web.NewServer(st, hr, log.With("comp", "web"))
+	webSrv, err := web.NewServer(st, hr, loop, log.With("comp", "web"))
 	if err != nil {
 		log.Error("web init", "err", err)
 		os.Exit(2)
