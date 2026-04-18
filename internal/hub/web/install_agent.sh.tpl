@@ -138,15 +138,25 @@ EOF
 fi
 
 # ── start ───────────────────────────────────────────────────────────────────
+# Capture the start moment so we can scope journalctl to logs produced by
+# this run only — otherwise we'd dump stale lines from the prior failed
+# attempt and confuse the operator.
+START_TS=$(date '+%Y-%m-%d %H:%M:%S')
+
 log "enabling + starting ${SVC_NAME}"
 systemctl enable --now "${SVC_NAME}"
 
-sleep 2
+# Give the agent a few seconds to either succeed (hello sent) or surface
+# its first error in the journal. 6s is enough for the gRPC handshake +
+# 1-2 backoff iterations on a DNS / firewall / TLS failure.
+sleep 6
+log "logs since start of this install:"
+journalctl -u "${SVC_NAME}" --no-pager --since "$START_TS" || true
+
 if systemctl is-active --quiet "${SVC_NAME}"; then
   log "ok — ${SVC_NAME} is running"
-  log "logs: journalctl -u ${SVC_NAME} -f"
+  log "follow: journalctl -u ${SVC_NAME} -f"
 else
-  log "service not active — last log lines:"
-  journalctl -u "${SVC_NAME}" --no-pager -n 30 || true
+  log "service not active — see logs above"
   exit 1
 fi
