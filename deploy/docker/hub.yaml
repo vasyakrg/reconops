@@ -7,7 +7,10 @@ server:
   # SAN list baked into the bootstrap CA's server cert. Add your real
   # hostname/IP here before the first start — they cannot be edited later
   # without regenerating /var/lib/recon/ca/ca.pem.
-  dns_names: ["localhost", "recon-hub"]
+  # `hub` covers agents running inside the same compose network; the others
+  # cover the operator-on-host case. Add your real DNS name(s) here BEFORE
+  # the first `compose up` — changing them later means regenerating the CA.
+  dns_names: ["hub", "localhost", "recon-hub"]
   ip_addrs: ["127.0.0.1"]
 
 storage:

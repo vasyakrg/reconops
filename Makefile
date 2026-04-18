@@ -139,3 +139,15 @@ compose-gen-token: ## Issue a bootstrap token; AGENT_ID=… required, TTL=24h op
 	$(COMPOSE) exec hub /usr/local/bin/recon-hub \
 	  --config /etc/recon/hub.yaml --mode gen-token \
 	  --agent-id "$(AGENT_ID)" --token-ttl "$${TTL:-24h}"
+
+.PHONY: compose-bootstrap-agent
+compose-bootstrap-agent: ## Seed the local-compose-agent's bootstrap token + start it
+	@$(COMPOSE) ps hub | grep -q "Up" || (echo "hub is not running — make compose-up first" && exit 1)
+	@token=$$($(COMPOSE) exec -T hub /usr/local/bin/recon-hub \
+	  --config /etc/recon/hub.yaml --mode gen-token \
+	  --agent-id local-compose-agent --token-ttl 1h 2>/dev/null | tail -1); \
+	test -n "$$token" || (echo "failed to obtain bootstrap token" && exit 1); \
+	echo "$$token" | $(COMPOSE) run --rm --no-deps -T --entrypoint /bin/sh agent \
+	  -c 'cat > /var/lib/recon-agent/bootstrap.token && chmod 0600 /var/lib/recon-agent/bootstrap.token' && \
+	echo "token seeded; bringing the agent up" && \
+	$(COMPOSE) --profile with-agent up -d agent

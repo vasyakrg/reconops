@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: hub-runtime
       args:
         VERSION: ${RECON_VERSION:-docker}
         COMMIT: ${RECON_COMMIT:-unknown}
@@ -16,20 +17,18 @@ services:
       - path: .env
         required: false
     environment:
-      # Honour Forwarded-Proto when fronted by an external nginx (the
-      # operator can drop the proxy in front of port 8080 themselves).
-      RECON_BEHIND_TLS_PROXY: ${RECON_BEHIND_TLS_PROXY:-false}
+      # nginx in front terminates TLS; honour X-Forwarded-Proto for the
+      # session cookie's Secure flag.
+      RECON_BEHIND_TLS_PROXY: "true"
     volumes:
-      # Persistent state: SQLite db, artifacts, generated CA, agent
-      # certificates, audit log. Survives `docker compose down -v` only
-      # if you do NOT pass -v.
+      # Persistent state: db, artifacts, generated CA, agent identities,
+      # audit log. Survives `docker compose down` (drop -v to keep).
       - recon-state:/var/lib/recon
-      # Hub config, mounted read-only. Edit on the host, restart container.
+      # Hub config, mounted read-only.
       - ./deploy/docker/hub.yaml:/etc/recon/hub.yaml:ro
+    expose:
+      - "8080"
     ports:
-      # HTTP UI. Bind to 127.0.0.1 in production and put nginx in front;
-      # leave open for local dev.
-      - "${RECON_HTTP_PORT:-8080}:8080"
       # gRPC for agents (mTLS). Must be reachable from every agent host.
       - "${RECON_GRPC_PORT:-9443}:9443"
     healthcheck:
@@ -39,6 +38,62 @@ services:
       retries: 3
       start_period: 5s
 
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: recon-nginx
+    restart: unless-stopped
+    depends_on:
+      hub:
+        condition: service_healthy
+    volumes:
+      - ./deploy/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/docker/nginx-entrypoint.sh:/docker-entrypoint.d/00-recon-tls.sh:ro
+      # Persists the auto-generated self-signed cert across container
+      # recreations. Bind-mount your own server.{crt,key} here for prod.
+      - nginx-certs:/etc/nginx/certs
+    environment:
+      # SAN baked into the dev cert. Override when fronting a real domain.
+      RECON_TLS_CN: ${RECON_TLS_CN:-localhost}
+    ports:
+      - "${RECON_HTTPS_PORT:-8443}:443"
+      - "${RECON_HTTP_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--no-check-certificate", "-qO-", "https://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: agent-runtime
+      args:
+        VERSION: ${RECON_VERSION:-docker}
+        COMMIT: ${RECON_COMMIT:-unknown}
+    image: recon-agent:${RECON_VERSION:-latest}
+    container_name: recon-agent
+    restart: unless-stopped
+    # Optional service — only starts when explicitly requested:
+    #   docker compose --profile with-agent up -d
+    profiles: ["with-agent"]
+    depends_on:
+      hub:
+        condition: service_healthy
+    volumes:
+      # Agent's own writable state — bootstrap.token + hub-ca.pem (received
+      # in the Enroll response) + the client cert/key written after first
+      # enrolment. The hub's CA does NOT need to be pre-seeded: the enroll
+      # exchange uses InsecureSkipVerify (token-protected) and the response
+      # carries the CA, which the agent persists for subsequent connections.
+      - recon-agent-state:/var/lib/recon-agent
+      - ./deploy/docker/agent.yaml:/etc/recon/agent.yaml:ro
+
 volumes:
   recon-state:
+    driver: local
+  nginx-certs:
+    driver: local
+  recon-agent-state:
     driver: local

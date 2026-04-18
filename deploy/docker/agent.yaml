@@ -1,0 +1,37 @@
+hub:
+  # Hostname inside the compose network — see service `hub` in
+  # docker-compose.yml.
+  endpoint: "hub:9443"
+
+  # Hub's bootstrap CA. The agent enroll path (re)writes this file every
+  # successful Enroll, so it must live in the agent's WRITABLE volume —
+  # not in the read-only shared mount. We seed it before the first start
+  # via `make compose-bootstrap-agent`.
+  ca_cert: /var/lib/recon-agent/hub-ca.pem
+
+  # Agent's own client cert & key — written here after first enrolment.
+  cert: /var/lib/recon-agent/agent.pem
+  key:  /var/lib/recon-agent/agent.key
+
+  # One-shot bootstrap token. Seed this file before the first start with:
+  #   make compose-bootstrap-agent
+  # which generates a token via `recon-hub --mode gen-token` and writes it
+  # into the recon-agent-state volume.
+  bootstrap_token: /var/lib/recon-agent/bootstrap.token
+
+  # Must match a SAN in the hub's server cert. `hub` is included in the
+  # default deploy/docker/hub.yaml dns_names list.
+  server_name: hub
+
+identity:
+  # Distinct from any prod agent_id so live tokens cannot be reused locally.
+  id: local-compose-agent
+  labels:
+    env: dev
+    role: compose-host
+
+runtime:
+  max_concurrent_collectors: 4
+  artifact_dir: /var/lib/recon-agent/artifacts
+  default_timeout: 30s
+  heartbeat_interval: 15s

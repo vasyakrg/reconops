@@ -1,8 +1,16 @@
 # Recon hub via docker compose
 
-The compose stack runs **only the hub**. Agents are deployed on the target hosts
-themselves (systemd unit in `deploy/systemd/recon-agent.service`); they connect
-to the hub over mTLS on port `9443`.
+Three services live in `docker-compose.yml`:
+
+| service | always-on | what it does |
+|---|---|---|
+| `hub`   | yes | gRPC for agents (`:9443`), HTTP UI on the internal compose network only |
+| `nginx` | yes | TLS terminator + reverse proxy fronting `hub:8080` (auto self-signed cert on first start) |
+| `agent` | profile `with-agent` | Local recon-agent for end-to-end dev, connects to `hub:9443` over mTLS |
+
+Real production agents run on the target hosts via the systemd unit
+(`deploy/systemd/recon-agent.service`), not in compose. The `agent`
+service is a convenience for local smoke testing the whole pipeline.
 
 ## 1. Bootstrap
 
@@ -13,10 +21,7 @@ cp .env.example .env
 Generate the bcrypt hash for the operator password and paste it into `.env`:
 
 ```bash
-docker compose run --rm --no-deps \
-  -e RECON_ADMIN_PASSWORD='strong-password' \
-  --entrypoint /usr/local/bin/recon-hub \
-  hub --mode gen-password-hash
+make compose-gen-hash PASSWORD='strong-password'
 ```
 
 Set `RECON_ADMIN_PASSWORD_HASH=<output>` and `RECON_LLM_API_KEY=sk-or-v1-…`
@@ -26,31 +31,51 @@ in `.env`.
 > add the hub's real DNS name(s) and IP(s) under `server.dns_names` /
 > `server.ip_addrs`. The bootstrap CA bakes them into the server cert and
 > changing them later means regenerating `/var/lib/recon/ca/`.
+>
+> Set `RECON_TLS_CN=<your hostname>` in `.env` so the nginx self-signed cert
+> matches. Or bind-mount your real cert at `/etc/nginx/certs/server.{crt,key}`.
 
 ## 2. Up
 
 ```bash
-docker compose up -d
-docker compose logs -f hub
+make compose-up           # builds + starts hub + nginx
+make compose-logs
 ```
 
-The UI is on <http://localhost:8080> (front it with nginx + TLS in production —
-see `deploy/nginx/recon.conf`). gRPC for agents on `localhost:9443`.
+The UI is on **<https://localhost:8443>** (browser will warn about the self-signed
+cert — accept). gRPC for agents on `localhost:9443`.
 
-## 3. Issue a bootstrap token for an agent
+## 3. Local agent (optional)
+
+For end-to-end dev — runs a recon-agent inside compose so you can poke at the
+investigator without provisioning a real host:
+
+```bash
+make compose-bootstrap-agent
+```
+
+This:
+1. issues a 1h bootstrap token via `compose exec hub …`,
+2. seeds it into the `recon-agent-state` volume,
+3. starts the `agent` service under profile `with-agent`.
+
+Within ~5s the agent appears as `local-compose-agent` on the **/hosts** page.
+
+To stop just the agent: `docker compose --profile with-agent down agent`.
+
+## 4. Issue a bootstrap token for a real (off-compose) agent
 
 Tokens are bound to a single `agent_id` and shown only once.
 
 ```bash
-docker compose exec hub /usr/local/bin/recon-hub \
-  --config /etc/recon/hub.yaml --mode gen-token \
-  --agent-id prod-app-01 --token-ttl 24h
+make compose-gen-token AGENT_ID=prod-app-01 TTL=24h
 ```
 
-Copy the token, install the agent on the target host (`deploy/docs/install.md`),
-write the token into `/var/lib/recon/bootstrap.token`, start `recon-agent`.
+Copy the token, install the agent on the target host
+(see `deploy/docs/install.md`), write the token into
+`/var/lib/recon/bootstrap.token`, start `recon-agent`.
 
-## 4. Revoke an agent
+## 5. Revoke an agent
 
 ```bash
 docker compose exec hub /usr/local/bin/recon-hub \
@@ -60,30 +85,29 @@ docker compose exec hub /usr/local/bin/recon-hub \
 
 The next `Connect` is rejected. To re-enrol, issue a fresh bootstrap token.
 
-## 5. Backups & state
+## 6. Backups & state
 
-Everything that matters lives in the `recon-state` named volume:
+Three named volumes:
 
-* `recon.db` — investigations, hosts, tool calls, findings, audit log
-* `artifacts/` — collector outputs (large, retention-trimmed at 7 days)
-* `ca/` — bootstrap CA + server cert (re-generating these invalidates every
-  enrolled agent — handle with care)
+* `recon-state`       — db, artifacts, generated CA, agent identities (the only
+                        one you actually need to back up)
+* `nginx-certs`       — the auto-generated self-signed cert; regenerable
+* `recon-agent-state` — local agent's client cert + bootstrap token; wipe to
+                        re-enrol the local agent
 
-Snapshot:
+Snapshot the important one:
 
 ```bash
 docker run --rm -v recon-state:/var/lib/recon -v "$PWD":/backup alpine \
   tar czf /backup/recon-state-$(date +%F).tar.gz -C /var/lib/recon .
 ```
 
-Restore: `tar xzf` into a fresh empty volume before bringing the stack up.
-
-## 6. Upgrade
+## 7. Upgrade
 
 ```bash
 git pull
-docker compose build --pull hub
-docker compose up -d hub
+docker compose build --pull          # rebuilds hub + agent (shared builder stage)
+docker compose up -d
 ```
 
 The hub re-applies SQLite migrations on start; the volume's data carries over.
