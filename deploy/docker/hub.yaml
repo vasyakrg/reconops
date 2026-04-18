@@ -10,7 +10,7 @@ server:
   # `hub` covers agents running inside the same compose network; the others
   # cover the operator-on-host case. Add your real DNS name(s) here BEFORE
   # the first `compose up` — changing them later means regenerating the CA.
-  dns_names: ["hub", "localhost", "recon-hub"]
+  dns_names: ["hub", "localhost", "recon-hub", "nginx.recon.orb.local"]
   ip_addrs: ["127.0.0.1"]
 
 storage:
