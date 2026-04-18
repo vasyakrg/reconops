@@ -23,7 +23,32 @@
   <label for="goal" style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:6px">Goal (1-3 sentences)</label>
   <textarea name="goal" id="goal" rows="2" required style="width:100%;font-family:var(--font-sans);font-size:13px"
     placeholder="e.g. cronjobs are failing on the prod k8s cluster — find out why"></textarea>
-  <div style="margin-top:8px;display:flex;justify-content:flex-end"><button class="btn primary" type="submit">Start investigation</button></div>
+
+  {{if .Hosts}}
+  <div style="display:flex;align-items:center;justify-content:space-between;margin:12px 0 6px">
+    <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">Scope (agents the investigator may touch)</label>
+    <div style="display:flex;gap:6px">
+      <button type="button" class="btn xs ghost" onclick="document.querySelectorAll('input[name=agent_ids]').forEach(c=>c.checked=true)">all</button>
+      <button type="button" class="btn xs ghost" onclick="document.querySelectorAll('input[name=agent_ids]').forEach(c=>c.checked=false)">none</button>
+      <button type="button" class="btn xs ghost" onclick="document.querySelectorAll('input[name=agent_ids][data-online=true]').forEach(c=>c.checked=true);document.querySelectorAll('input[name=agent_ids][data-online=false]').forEach(c=>c.checked=false)">online only</button>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r-md);padding:8px;background:var(--bg-0)">
+    {{range .Hosts}}
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:3px 4px;border-radius:var(--r-sm)" onmouseover="this.style.background='var(--bg-2)'" onmouseout="this.style.background=''">
+      <input type="checkbox" name="agent_ids" value="{{.ID}}" data-online="{{eq .Status "online"}}" {{if eq .Status "online"}}checked{{end}}>
+      <span class="dot {{if eq .Status "online"}}ok{{else if eq .Status "offline"}}offline{{else}}warn{{end}}" style="width:6px;height:6px"></span>
+      <span class="mono" style="color:var(--fg-0);flex:1">{{.ID}}</span>
+      <span class="dim mono" style="font-size:10.5px">{{range $k, $v := .Labels}}{{$k}}={{$v}} {{end}}</span>
+    </label>
+    {{end}}
+  </div>
+  <div class="dim" style="font-size:10.5px;line-height:1.45;margin-top:4px">Leave all unchecked to allow the investigator to discover any host. Checked hosts become a hard allowlist.</div>
+  {{else}}
+  <div class="dim" style="margin:10px 0;font-size:11.5px">No agents enrolled yet — investigation will run with an empty allowlist.</div>
+  {{end}}
+
+  <div style="margin-top:10px;display:flex;justify-content:flex-end"><button class="btn primary" type="submit">Start investigation</button></div>
 </form>
 {{else}}
 <div class="card" style="border-color:color-mix(in oklab, var(--err) 35%, var(--border));margin-bottom:18px">

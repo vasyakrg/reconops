@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -22,6 +23,10 @@ type Investigation struct {
 	TotalToolCalls        int
 	CompactionTokens      int // tokens spent on internal compaction calls (review C2)
 	SummaryJSON           sql.NullString
+	// AllowedHosts: empty means "all hosts" (legacy behaviour). When set,
+	// list_hosts only surfaces these and collect/collect_batch reject any
+	// host_id outside the list.
+	AllowedHosts []string
 }
 
 type Message struct {
@@ -66,25 +71,39 @@ type Finding struct {
 
 func (s *Store) InsertInvestigation(ctx context.Context, inv Investigation) error {
 	now := time.Now().UTC()
+	var allowed sql.NullString
+	if len(inv.AllowedHosts) > 0 {
+		b, err := json.Marshal(inv.AllowedHosts)
+		if err != nil {
+			return err
+		}
+		allowed = sql.NullString{String: string(b), Valid: true}
+	}
 	_, err := s.db.ExecContext(ctx, `
         INSERT INTO investigations
-          (id, goal, status, created_by, created_at, updated_at, model, base_url)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		inv.ID, inv.Goal, inv.Status, inv.CreatedBy, now, now, inv.Model, inv.BaseURL)
+          (id, goal, status, created_by, created_at, updated_at, model, base_url, allowed_hosts_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		inv.ID, inv.Goal, inv.Status, inv.CreatedBy, now, now, inv.Model, inv.BaseURL, allowed)
 	return err
 }
 
 func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation, error) {
 	var inv Investigation
+	var allowed sql.NullString
 	err := s.db.QueryRowContext(ctx, `
         SELECT id, goal, status, created_by, created_at, updated_at, model, base_url,
-               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json
+               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json,
+               allowed_hosts_json
           FROM investigations WHERE id=?`, id).
 		Scan(&inv.ID, &inv.Goal, &inv.Status, &inv.CreatedBy, &inv.CreatedAt, &inv.UpdatedAt,
 			&inv.Model, &inv.BaseURL,
-			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON)
+			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON,
+			&allowed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Investigation{}, fmt.Errorf("investigation %s not found", id)
+	}
+	if allowed.Valid && allowed.String != "" {
+		_ = json.Unmarshal([]byte(allowed.String), &inv.AllowedHosts)
 	}
 	return inv, err
 }

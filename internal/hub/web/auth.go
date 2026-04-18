@@ -342,31 +342,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		s.renderStandalone(w, "login", map[string]any{
-			"Title":   "Login",
-			"Version": version.Version,
-			"Next":    r.URL.Query().Get("next"),
-		})
+		s.renderLogin(w, http.StatusOK, "", r.URL.Query().Get("next"), "")
 	case http.MethodPost:
 		r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			s.renderLogin(w, http.StatusBadRequest, "", "", "Bad request.")
 			return
 		}
+		next := r.FormValue("next")
+		user := strings.TrimSpace(r.FormValue("username"))
 		// (review H1) Throttle by client IP — bcrypt is slow but not slow
 		// enough for an unbounded attacker. 10 failures / 5 min.
 		ip := clientIP(r)
 		if !s.sessions.loginAllowed(ip) {
 			s.audit(r.Context(), "anonymous", "auth.login_throttled", map[string]any{"ip": ip})
-			http.Error(w, "too many failed attempts; try again later", http.StatusTooManyRequests)
+			s.renderLogin(w, http.StatusTooManyRequests, user, next,
+				"Too many failed attempts. Try again in a few minutes.")
 			return
 		}
-		user := strings.TrimSpace(r.FormValue("username"))
 		pw := r.FormValue("password")
 		if user != s.auth.Username || !verifyPassword(pw, s.auth.PasswordHash) {
 			s.sessions.recordLoginFailure(ip)
 			s.audit(r.Context(), "anonymous", "auth.login_failed", map[string]any{"username": user, "ip": ip})
-			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			s.renderLogin(w, http.StatusUnauthorized, user, next, "Invalid username or password.")
 			return
 		}
 		sid, tok := s.sessions.issue(user, s.auth.SessionTTL)
@@ -384,7 +382,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			Secure:   secure,
 		})
 		s.audit(r.Context(), user, "auth.login", nil)
-		next := r.FormValue("next")
 		if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
 			next = "/"
 		}
@@ -392,6 +389,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// renderLogin re-renders the login page with an inline error and the
+// previously-entered username preserved. This avoids the "redirect to a
+// 401 plain-text page" UX, keeping every step on the same form.
+func (s *Server) renderLogin(w http.ResponseWriter, code int, user, next, errMsg string) {
+	w.WriteHeader(code)
+	s.renderStandalone(w, "login", map[string]any{
+		"Title":    "Login",
+		"Version":  version.Version,
+		"Next":     next,
+		"Username": user,
+		"Error":    errMsg,
+	})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

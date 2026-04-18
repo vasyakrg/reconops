@@ -81,7 +81,7 @@ You are speaking with an advanced engineer who values depth over politeness. Be 
 // BuildSystemPrompt substitutes the placeholders in the template. Called once
 // per investigation; the result is stored as the first message and never
 // changes for the duration of that investigation.
-func BuildSystemPrompt(goal, model string, startedAt time.Time, maxSteps, maxTokens int) string {
+func BuildSystemPrompt(goal, model string, startedAt time.Time, maxSteps, maxTokens int, allowedHosts ...string) string {
 	r := strings.NewReplacer(
 		"{{goal}}", goal,
 		"{{started_at}}", startedAt.UTC().Format(time.RFC3339),
@@ -89,5 +89,20 @@ func BuildSystemPrompt(goal, model string, startedAt time.Time, maxSteps, maxTok
 		"{{max_steps}}", fmt.Sprintf("%d", maxSteps),
 		"{{max_tokens}}", fmt.Sprintf("%d", maxTokens),
 	)
-	return r.Replace(systemPromptTemplate)
+	out := r.Replace(systemPromptTemplate)
+	// Hard constraint: when the operator scoped the investigation to a
+	// subset of agents, the model MUST stay within it. The hub also
+	// enforces this server-side in the collect / collect_batch handlers,
+	// but stating it in the system prompt avoids wasted turns where the
+	// model proposes a call against an out-of-scope host that the hub
+	// would then reject.
+	if len(allowedHosts) > 0 {
+		out += "\n\n## Scope constraint (operator)\n" +
+			"This investigation is restricted to the following agent_ids. " +
+			"`list_hosts` returns only these; `collect` / `collect_batch` " +
+			"will be rejected by the hub for any other host_id. Do not " +
+			"propose actions against hosts outside this list:\n" +
+			"- " + strings.Join(allowedHosts, "\n- ") + "\n"
+	}
+	return out
 }

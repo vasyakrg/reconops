@@ -28,6 +28,24 @@ type HandlerEnv struct {
 	OnlineAgents    func() []string
 	InvestigationID string
 	ArtifactDir     string
+	// AllowedHosts: when non-empty, list_hosts only surfaces these and
+	// collect / collect_batch reject any host_id outside the set. Empty
+	// preserves the legacy behaviour ("all hosts").
+	AllowedHosts []string
+}
+
+// inAllowed returns true if the host is in the allowlist; when the allowlist
+// is empty the call is unrestricted.
+func (e HandlerEnv) inAllowed(hostID string) bool {
+	if len(e.AllowedHosts) == 0 {
+		return true
+	}
+	for _, h := range e.AllowedHosts {
+		if h == hostID {
+			return true
+		}
+	}
+	return false
 }
 
 // ToolResult is what gets serialized into the LLM 'tool' message.
@@ -95,6 +113,9 @@ func handleListHosts(ctx context.Context, env HandlerEnv, argsJSON string) ToolR
 	}
 	out := []hostView{}
 	for _, h := range hosts {
+		if !env.inAllowed(h.ID) {
+			continue
+		}
 		if !matchSelector(h.Labels, sel) {
 			continue
 		}
@@ -215,6 +236,9 @@ func PrepareCollect(ctx context.Context, env HandlerEnv, argsJSON string) (Colle
 	if a.HostID == "" || a.Collector == "" {
 		return CollectExecution{}, fmt.Errorf("host_id and collector required")
 	}
+	if !env.inAllowed(a.HostID) {
+		return CollectExecution{}, fmt.Errorf("host_id %q is outside this investigation's allowlist (%v)", a.HostID, env.AllowedHosts)
+	}
 	runID, err := env.Runner.CreateRun(ctx, runner.RunRequest{
 		Name:      fmt.Sprintf("inv:%s %s on %s", env.InvestigationID, a.Collector, a.HostID),
 		HostIDs:   []string{a.HostID},
@@ -241,6 +265,11 @@ func PrepareCollectBatch(ctx context.Context, env HandlerEnv, argsJSON string) (
 	}
 	if len(a.HostIDs) == 0 || a.Collector == "" {
 		return CollectExecution{}, fmt.Errorf("host_ids and collector required")
+	}
+	for _, h := range a.HostIDs {
+		if !env.inAllowed(h) {
+			return CollectExecution{}, fmt.Errorf("host_id %q is outside this investigation's allowlist (%v)", h, env.AllowedHosts)
+		}
 	}
 	runID, err := env.Runner.CreateRun(ctx, runner.RunRequest{
 		Name:      fmt.Sprintf("inv:%s %s on %d hosts", env.InvestigationID, a.Collector, len(a.HostIDs)),

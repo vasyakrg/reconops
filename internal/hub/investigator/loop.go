@@ -75,7 +75,7 @@ func (l *Loop) Info() (model, baseURL string) {
 
 // Start creates a new investigation row, persists the system prompt + user
 // goal as the first two messages, and triggers the first LLM call.
-func (l *Loop) Start(ctx context.Context, goal, createdBy string) (string, error) {
+func (l *Loop) Start(ctx context.Context, goal, createdBy string, allowedHosts ...string) (string, error) {
 	if goal == "" {
 		return "", errors.New("goal is empty")
 	}
@@ -83,18 +83,22 @@ func (l *Loop) Start(ctx context.Context, goal, createdBy string) (string, error
 		return "", errors.New("LLM client not configured (set RECON_LLM_API_KEY)")
 	}
 	id := newInvestigationID()
+	// Deduplicate + drop blanks so empty form fields don't smuggle in as
+	// "" entries that would never match any real agent_id.
+	allowed := dedupeNonEmpty(allowedHosts)
 	inv := store.Investigation{
-		ID:        id,
-		Goal:      goal,
-		Status:    "active",
-		CreatedBy: createdBy,
-		Model:     l.llm.Model(),
-		BaseURL:   "configured",
+		ID:           id,
+		Goal:         goal,
+		Status:       "active",
+		CreatedBy:    createdBy,
+		Model:        l.llm.Model(),
+		BaseURL:      "configured",
+		AllowedHosts: allowed,
 	}
 	if err := l.store.InsertInvestigation(ctx, inv); err != nil {
 		return "", err
 	}
-	system := BuildSystemPrompt(goal, l.llm.Model(), time.Now(), l.maxSteps, l.maxTokens)
+	system := BuildSystemPrompt(goal, l.llm.Model(), time.Now(), l.maxSteps, l.maxTokens, allowed...)
 	if _, err := l.store.AppendMessage(ctx, store.Message{
 		InvestigationID: id, Role: "system", Content: system,
 	}); err != nil {
@@ -650,6 +654,12 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 // message and marks the call executed. For mark_done / ask_operator it also
 // updates the investigation status accordingly.
 func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *store.ToolCallRow) error {
+	// Reload the investigation to get the allowed_hosts allowlist; cheap
+	// (single-row PK lookup) and avoids a separate accessor.
+	inv, err := l.store.GetInvestigation(ctx, investigationID)
+	if err != nil {
+		return err
+	}
 	env := HandlerEnv{
 		Store:           l.store,
 		Runner:          l.runner,
@@ -657,6 +667,7 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 		OnlineAgents:    l.agents,
 		InvestigationID: investigationID,
 		ArtifactDir:     "", // set by runner when needed
+		AllowedHosts:    inv.AllowedHosts,
 	}
 
 	var result ToolResult
@@ -902,4 +913,27 @@ func newInvestigationID() string {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return "inv_" + hex.EncodeToString(b[:])
+}
+
+// dedupeNonEmpty removes blanks + duplicates while preserving the operator's
+// original ordering — the prompt's "scope constraint" list reads more
+// naturally when the agents appear in the order they were ticked.
+func dedupeNonEmpty(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }

@@ -44,6 +44,56 @@ func (s *Store) InsertBootstrapToken(ctx context.Context, plaintext, expectedAge
 // The exact reason is intentionally not leaked to the caller.
 var ErrTokenInvalid = errors.New("bootstrap token invalid, expired, or bound to a different agent")
 
+// BootstrapTokenRow is the redacted view shown in the settings UI — never
+// includes the plaintext token (we only have the hash anyway).
+type BootstrapTokenRow struct {
+	TokenHash       string
+	ExpectedAgentID string
+	IssuedAt        time.Time
+	ExpiresAt       time.Time
+	IssuedBy        string
+	ConsumedAt      sql.NullTime
+	UsedBy          sql.NullString
+}
+
+// ListBootstrapTokens returns the most-recent issued tokens (any status),
+// newest first. Caller decides which buckets to surface.
+func (s *Store) ListBootstrapTokens(ctx context.Context, limit int) ([]BootstrapTokenRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT token_hash, COALESCE(expected_agent_id,''), issued_at, expires_at,
+               COALESCE(issued_by,''), consumed_at, used_by
+          FROM bootstrap_tokens
+         ORDER BY issued_at DESC
+         LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []BootstrapTokenRow
+	for rows.Next() {
+		var r BootstrapTokenRow
+		if err := rows.Scan(&r.TokenHash, &r.ExpectedAgentID, &r.IssuedAt, &r.ExpiresAt,
+			&r.IssuedBy, &r.ConsumedAt, &r.UsedBy); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteBootstrapToken removes an unused token by its sha256 hash. Idempotent
+// — returns nil when the row was already gone (already consumed and operator
+// clicked revoke later, or another session beat us). Already-consumed rows
+// are also deletable so the operator can prune the list.
+func (s *Store) DeleteBootstrapToken(ctx context.Context, tokenHash string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM bootstrap_tokens WHERE token_hash = ?`, tokenHash)
+	return err
+}
+
 // ConsumeBootstrapToken atomically validates and marks the token consumed.
 // The token must (a) exist, (b) not be expired, (c) not be consumed, and
 // (d) be bound to the same expected_agent_id supplied here.

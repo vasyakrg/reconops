@@ -17,8 +17,11 @@
       <span class="brand-name">recon</span>
     </div>
     <input type="hidden" name="next" value="{{.Next}}">
+    {{if .Error}}
+    <div role="alert" style="background:var(--err-bg);border:1px solid color-mix(in oklab, var(--err) 40%, transparent);color:var(--err);padding:8px 10px;border-radius:var(--r-md);font-size:12.5px;margin-bottom:4px">{{.Error}}</div>
+    {{end}}
     <label for="login-username">Username</label>
-    <input id="login-username" type="text" name="username" autofocus required autocomplete="username">
+    <input id="login-username" type="text" name="username" value="{{.Username}}" autofocus required autocomplete="username">
     <label for="login-password">Password</label>
     <input id="login-password" type="password" name="password" required autocomplete="current-password">
     <div class="actions"><button class="btn primary" type="submit">Sign in</button></div>

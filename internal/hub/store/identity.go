@@ -95,3 +95,23 @@ func (s *Store) RevokeIdentity(ctx context.Context, agentID, reason string) erro
 		time.Now().UTC(), reason, agentID)
 	return err
 }
+
+// DeleteHost wipes a host and its enrollment row. Cascades through tasks
+// (FK ON DELETE CASCADE on hosts.id) and collector_manifests. Use after the
+// operator has revoked the identity OR for cleaning up an offline host that
+// will never come back. Investigations / findings / audit entries do NOT
+// reference hosts.id directly, so they are preserved as historical record.
+func (s *Store) DeleteHost(ctx context.Context, agentID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM enrolled_identities WHERE agent_id=?`, agentID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hosts WHERE id=?`, agentID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

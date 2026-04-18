@@ -33,10 +33,15 @@
 <section style="padding:18px 24px 14px;border-bottom:1px solid var(--border);background:var(--bg-0)">
   <div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Goal</div>
   <div class="t-lg" style="color:var(--fg-0);font-weight:500;max-width:90ch">{{.Inv.Goal}}</div>
-  <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:var(--fg-2)" class="mono">
+  <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:var(--fg-2);flex-wrap:wrap" class="mono">
     <span>created <span style="color:var(--fg-1)">{{.Inv.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</span> by <span style="color:var(--fg-1)">{{.Inv.CreatedBy}}</span></span>
     <span>· {{sinceUTC .Inv.CreatedAt}}</span>
     <span>· <span style="color:var(--fg-1)">{{len .Findings}} finding{{if ne (len .Findings) 1}}s{{end}}</span></span>
+    {{if .Inv.AllowedHosts}}
+    <span>· scope: {{range $i, $h := .Inv.AllowedHosts}}{{if $i}}<span class="dim">, </span>{{end}}<span class="chip"><span class="v">{{$h}}</span></span>{{end}}</span>
+    {{else}}
+    <span>· scope: <span class="dim">all hosts</span></span>
+    {{end}}
   </div>
 </section>
 

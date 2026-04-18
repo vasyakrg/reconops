@@ -10,6 +10,18 @@
       <span class="mono muted" style="font-size:11.5px" title="{{.Host.LastSeenAt.UTC.Format "2006-01-02 15:04:05 UTC"}}">last seen {{sinceUTC .Host.LastSeenAt}}</span>
     </div>
   </div>
+  <div class="actions">
+    <form method="post" action="/hosts/revoke" onsubmit="return confirm('Revoke this agent\'s identity? Its current cert is rejected at next Connect; it can re-enrol with a fresh bootstrap token.')" style="margin:0">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="agent_id" value="{{.Host.ID}}">
+      <button class="btn sm danger-ghost" type="submit" title="Reject this cert at next Connect">Revoke cert</button>
+    </form>
+    <form method="post" action="/hosts/delete" onsubmit="return confirm('Delete this host from the inventory? Refused if the agent is online.')" style="margin:0">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="agent_id" value="{{.Host.ID}}">
+      <button class="btn sm danger-ghost" type="submit"{{if eq .Host.Status "online"}} disabled title="Online — revoke first, wait for offline"{{else}} title="Wipe host + identity + tasks/manifests"{{end}}>Delete host</button>
+    </form>
+  </div>
 </header>
 
 <div style="display:grid;grid-template-columns:320px 1fr;gap:18px">

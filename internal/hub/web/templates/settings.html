@@ -51,8 +51,8 @@
   <div style="display:flex;flex-direction:column;gap:14px">
 
     <div id="tokens" class="panel">
-      <div class="panel-hd"><span>Bootstrap tokens</span></div>
-      <form method="post" action="/settings/issue-token" style="padding:14px;display:flex;flex-direction:column;gap:8px">
+      <div class="panel-hd"><span>Bootstrap tokens</span><span class="muted mono" style="text-transform:none;letter-spacing:0;font-size:11px">{{len .Tokens}}</span></div>
+      <form method="post" action="/settings/issue-token" style="padding:14px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--border)">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">agent_id</label>
         <input type="text" name="agent_id" required placeholder="prod-app-01" style="font-family:var(--font-mono);font-size:12px">
@@ -61,6 +61,27 @@
         <button class="btn primary" type="submit">Issue token</button>
         <div class="dim" style="font-size:10.5px;line-height:1.45">Tokens are bound to one agent_id and shown only once after issue.</div>
       </form>
+      {{if .Tokens}}
+      <div>
+        {{range .Tokens}}
+        <div style="padding:8px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:11.5px">
+          <div style="flex:1;min-width:0">
+            <div class="mono" style="color:var(--fg-0);font-size:12px" class="trunc">{{.ExpectedAgentID}}</div>
+            <div class="mono dim" style="font-size:10.5px">
+              {{if .ConsumedAt.Valid}}<span style="color:var(--ok)">consumed</span> {{sinceUTC .ConsumedAt.Time}}
+              {{else if .ExpiresAt.Before now}}<span style="color:var(--err)">expired</span> {{sinceUTC .ExpiresAt}}
+              {{else}}<span style="color:var(--accent)">unused</span> · expires {{sinceUTC .ExpiresAt}}{{end}}
+            </div>
+          </div>
+          <form method="post" action="/settings/revoke-token" onsubmit="return confirm('Delete this token row?')" style="margin:0">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="token_hash" value="{{.TokenHash}}">
+            <button class="btn xs danger-ghost" type="submit" title="Delete the token row from the database">delete</button>
+          </form>
+        </div>
+        {{end}}
+      </div>
+      {{end}}
     </div>
 
     <div class="panel">

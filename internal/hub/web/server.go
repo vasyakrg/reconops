@@ -78,6 +78,7 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 		"findCount":  findCount,
 		"barRepeat":  barRepeat,
 		"replaceAll": strings.ReplaceAll,
+		"now":        func() time.Time { return time.Now().UTC() },
 	}).ParseFS(tplFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -124,6 +125,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/audit", auth(s.handleAudit))
 	mux.HandleFunc("/settings", auth(s.handleSettings))
 	mux.HandleFunc("/settings/issue-token", auth(s.handleIssueToken))
+	mux.HandleFunc("/settings/revoke-token", auth(s.handleRevokeToken))
+	mux.HandleFunc("/hosts/delete", auth(s.handleHostDelete))
+	mux.HandleFunc("/hosts/revoke", auth(s.handleHostRevoke))
 	return mux
 }
 
@@ -402,6 +406,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		model, _ = s.loop.Info()
 		maxSteps, maxTokens = s.loop.Budgets()
 	}
+	tokens, _ := s.store.ListBootstrapTokens(r.Context(), 50)
 	s.renderForReq(w, r, "settings", map[string]any{
 		"Title":     "Settings",
 		"Hosts":     hosts,
@@ -410,6 +415,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"MaxSteps":  maxSteps,
 		"MaxTokens": maxTokens,
 		"AdminUser": s.auth.Username,
+		"Tokens":    tokens,
 	})
 }
 
@@ -448,6 +454,98 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 		s.sessions.setFlash(sid.Value, "issued_token", tok)
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// handleRevokeToken deletes an unused (or any) bootstrap token by hash.
+// The hash is the primary key — operators never see the plaintext after
+// issue, so the form passes the hash directly.
+func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	hash := r.FormValue("token_hash")
+	if hash == "" {
+		http.Error(w, "token_hash required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DeleteBootstrapToken(r.Context(), hash); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r.Context(), authedUser(r), "token.revoke", map[string]any{"token_hash_prefix": truncate(hash, 12)})
+	http.Redirect(w, r, "/settings#tokens", http.StatusSeeOther)
+}
+
+// handleHostRevoke marks the agent's enrolled identity revoked. The next
+// gRPC Connect from that agent fails with `agent identity revoked`. The
+// host row stays — operator can re-enroll under the same id with a fresh
+// bootstrap token.
+func (s *Server) handleHostRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("agent_id")
+	if id == "" {
+		http.Error(w, "agent_id required", http.StatusBadRequest)
+		return
+	}
+	reason := r.FormValue("reason")
+	if reason == "" {
+		reason = "operator UI"
+	}
+	if err := s.store.RevokeIdentity(r.Context(), id, reason); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r.Context(), authedUser(r), "identity.revoke", map[string]any{"agent_id": id, "reason": reason})
+	http.Redirect(w, r, "/hosts/"+id, http.StatusSeeOther)
+}
+
+// handleHostDelete wipes the host + its enrollment row + cascades through
+// collector_manifests / tasks. Refuses to delete an online host so the
+// operator can't accidentally orphan a running agent — revoke first.
+func (s *Server) handleHostDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("agent_id")
+	if id == "" {
+		http.Error(w, "agent_id required", http.StatusBadRequest)
+		return
+	}
+	host, err := s.store.GetHost(r.Context(), id)
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	if host.Status == "online" {
+		http.Error(w, "refusing to delete an online host — revoke its identity first, wait for it to drop offline", http.StatusConflict)
+		return
+	}
+	if err := s.store.DeleteHost(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r.Context(), authedUser(r), "host.delete", map[string]any{"agent_id": id, "last_status": host.Status})
+	http.Redirect(w, r, "/hosts", http.StatusSeeOther)
 }
 
 // audit writes an audit row, escalating any failure to ERROR-level slog —
@@ -689,6 +787,7 @@ func (s *Server) handleInvestigationsList(w http.ResponseWriter, r *http.Request
 			statusBuckets.Aborted++
 		}
 	}
+	hosts, _ := s.store.ListHosts(r.Context())
 	s.renderForReq(w, r, "investigations_list", map[string]any{
 		"Title":         "Investigations",
 		"Items":         invs,
@@ -698,6 +797,7 @@ func (s *Server) handleInvestigationsList(w http.ResponseWriter, r *http.Request
 		"MaxTokens":     maxTokens,
 		"Filter":        filter,
 		"Buckets":       statusBuckets,
+		"Hosts":         hosts,
 	})
 }
 
@@ -720,13 +820,16 @@ func (s *Server) handleInvestigationsNew(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "goal required", http.StatusBadRequest)
 		return
 	}
-	id, err := s.loop.Start(r.Context(), goal, "operator")
+	// agent_ids is a multi-value form field (one <input name="agent_ids"
+	// value="..."> per ticked checkbox). Empty = no scope restriction.
+	allowed := r.Form["agent_ids"]
+	id, err := s.loop.Start(r.Context(), goal, authedUser(r), allowed...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.audit(r.Context(), "operator", "investigation.start",
-		map[string]any{"investigation_id": id, "goal_chars": len(goal)})
+	s.audit(r.Context(), authedUser(r), "investigation.start",
+		map[string]any{"investigation_id": id, "goal_chars": len(goal), "allowed_hosts": len(allowed)})
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }
 
