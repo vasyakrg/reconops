@@ -123,7 +123,7 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 		store: st, runner: runner, loop: loop, tpl: tpl, log: log,
 		auth:     authConfig(auth),
 		install:  install,
-		sessions: newSessionStore(),
+		sessions: newSessionStore(st),
 	}, nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/vasyakrg/recon/internal/common/version"
+	"github.com/vasyakrg/recon/internal/hub/store"
 )
 
 // authConfig is what the hub passes to the web layer at construction. The
@@ -39,28 +40,32 @@ type session struct {
 	username string
 	csrf     string // 32-byte hex; double-submit token
 	expires  time.Time
-
-	// flash holds short-lived one-shot data attached to the next render
-	// (e.g. a freshly-issued bootstrap token). Read once, then cleared.
-	// (review C1: never put secrets in URL query — nginx access_log etc.)
-	flashMu sync.Mutex
-	flash   map[string]string
 }
 
+// sessionStore keeps sessions in SQLite (so they survive hub restarts) and
+// in-memory caches:
+//   - flash messages: one-shot data attached to the next render of a page
+//     (e.g. a freshly-issued bootstrap token — see review C1 about never
+//     putting secrets in URL query because nginx access_log catches them).
+//     Ephemeral by design.
+//   - loginFailures: per-IP sliding window for brute-force throttle (review
+//     H1). Resetting on restart is acceptable — the legitimate operator is
+//     not going to be ratelimited by their own restart, and an attacker
+//     cannot trigger a restart.
 type sessionStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*session
+	store *store.Store
 
-	// loginAttempts is a per-key sliding window of failed login attempts;
-	// keyed by client IP. Used by /login to throttle brute-force.
-	// (review H1)
+	flashMu sync.Mutex
+	flashes map[string]map[string]string // sid → key → value
+
 	attemptMu     sync.Mutex
 	loginFailures map[string][]time.Time
 }
 
-func newSessionStore() *sessionStore {
+func newSessionStore(st *store.Store) *sessionStore {
 	return &sessionStore{
-		sessions:      map[string]*session{},
+		store:         st,
+		flashes:       map[string]map[string]string{},
 		loginFailures: map[string][]time.Time{},
 	}
 }
@@ -88,76 +93,78 @@ func (s *sessionStore) recordLoginFailure(key string) {
 	s.loginFailures[key] = append(s.loginFailures[key], time.Now())
 }
 
-func (s *sessionStore) issue(username string, ttl time.Duration) (sessionID, csrf string) {
+func (s *sessionStore) issue(ctx context.Context, username string, ttl time.Duration) (sessionID, csrf string, err error) {
 	sid := randomToken()
 	tok := randomToken()
-	s.mu.Lock()
-	s.sessions[sid] = &session{
-		username: username, csrf: tok, expires: time.Now().Add(ttl),
-		flash: map[string]string{},
+	now := time.Now()
+	if err := s.store.InsertSession(ctx, store.SessionRow{
+		SID: sid, Username: username, CSRF: tok,
+		CreatedAt: now, ExpiresAt: now.Add(ttl),
+	}); err != nil {
+		return "", "", err
 	}
-	s.mu.Unlock()
-	return sid, tok
+	return sid, tok, nil
 }
 
-// setFlash attaches a one-shot value to the session.
+// setFlash attaches a one-shot value to the session. In-memory only; flashes
+// are read on the very next render so persisting them across a hub restart
+// has no value (and the secrets they carry — freshly issued tokens — should
+// be re-issued anyway).
 func (s *sessionStore) setFlash(sid, key, val string) {
-	s.mu.RLock()
-	sess := s.sessions[sid]
-	s.mu.RUnlock()
-	if sess == nil {
-		return
+	s.flashMu.Lock()
+	defer s.flashMu.Unlock()
+	if s.flashes[sid] == nil {
+		s.flashes[sid] = map[string]string{}
 	}
-	sess.flashMu.Lock()
-	defer sess.flashMu.Unlock()
-	if sess.flash == nil {
-		sess.flash = map[string]string{}
-	}
-	sess.flash[key] = val
+	s.flashes[sid][key] = val
 }
 
 // popFlash returns and clears a one-shot value.
 func (s *sessionStore) popFlash(sid, key string) string {
-	s.mu.RLock()
-	sess := s.sessions[sid]
-	s.mu.RUnlock()
-	if sess == nil {
+	s.flashMu.Lock()
+	defer s.flashMu.Unlock()
+	bag := s.flashes[sid]
+	if bag == nil {
 		return ""
 	}
-	sess.flashMu.Lock()
-	defer sess.flashMu.Unlock()
-	v := sess.flash[key]
-	delete(sess.flash, key)
+	v := bag[key]
+	delete(bag, key)
+	if len(bag) == 0 {
+		delete(s.flashes, sid)
+	}
 	return v
 }
 
-func (s *sessionStore) lookup(sid string) *session {
+func (s *sessionStore) lookup(ctx context.Context, sid string) *session {
 	if sid == "" {
 		return nil
 	}
-	s.mu.RLock()
-	sess, ok := s.sessions[sid]
-	s.mu.RUnlock()
-	if !ok || time.Now().After(sess.expires) {
+	row, err := s.store.GetSession(ctx, sid)
+	if err != nil {
 		return nil
 	}
-	return sess
+	return &session{username: row.Username, csrf: row.CSRF, expires: row.ExpiresAt}
 }
 
-func (s *sessionStore) revoke(sid string) {
-	s.mu.Lock()
-	delete(s.sessions, sid)
-	s.mu.Unlock()
+func (s *sessionStore) revoke(ctx context.Context, sid string) {
+	_ = s.store.DeleteSession(ctx, sid)
+	s.flashMu.Lock()
+	delete(s.flashes, sid)
+	s.flashMu.Unlock()
 }
 
-// gcExpired drops expired sessions periodically — bounded growth.
-func (s *sessionStore) gcExpired() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	for k, v := range s.sessions {
-		if now.After(v.expires) {
-			delete(s.sessions, k)
+// gcExpired drops expired session rows + their associated flash bags.
+// Bounded growth for both. Called from the runSessionGC ticker.
+func (s *sessionStore) gcExpired(ctx context.Context) {
+	_ = s.store.DeleteExpiredSessions(ctx)
+	// Flash bags are keyed by sid but the web_sessions table no longer has
+	// those sids — drop any flashes whose session is gone. Cheap: one
+	// GetSession call per sid, and the flash map is tiny anyway.
+	s.flashMu.Lock()
+	defer s.flashMu.Unlock()
+	for sid := range s.flashes {
+		if _, err := s.store.GetSession(ctx, sid); err != nil {
+			delete(s.flashes, sid)
 		}
 	}
 }
@@ -238,7 +245,7 @@ func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 		sid, _ := r.Cookie(cookieSession)
 		var sess *session
 		if sid != nil {
-			sess = s.sessions.lookup(sid.Value)
+			sess = s.sessions.lookup(r.Context(), sid.Value)
 		}
 		if sess == nil {
 			if r.Method == http.MethodGet {
@@ -324,7 +331,7 @@ func (s *Server) csrfTokenFor(r *http.Request) string {
 	if err != nil || sid == nil {
 		return ""
 	}
-	sess := s.sessions.lookup(sid.Value)
+	sess := s.sessions.lookup(r.Context(), sid.Value)
 	if sess == nil {
 		return ""
 	}
@@ -367,7 +374,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.renderLogin(w, http.StatusUnauthorized, user, next, "Invalid username or password.")
 			return
 		}
-		sid, tok := s.sessions.issue(user, s.auth.SessionTTL)
+		sid, tok, err := s.sessions.issue(r.Context(), user, s.auth.SessionTTL)
+		if err != nil {
+			s.renderLogin(w, http.StatusInternalServerError, user, next, "Could not start session: "+err.Error())
+			return
+		}
 		secure := s.cookieSecure(r)
 		http.SetCookie(w, &http.Cookie{
 			Name: cookieSession, Value: sid, Path: "/",
@@ -407,7 +418,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, code int, user, next, errMsg
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
-		s.sessions.revoke(sid.Value)
+		s.sessions.revoke(r.Context(), sid.Value)
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieSession, Value: "", Path: "/", MaxAge: -1})
 	http.SetCookie(w, &http.Cookie{Name: cookieCSRF, Value: "", Path: "/", MaxAge: -1})
@@ -424,7 +435,7 @@ func (s *Server) runSessionGC(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.sessions.gcExpired()
+			s.sessions.gcExpired(ctx)
 		}
 	}
 }
