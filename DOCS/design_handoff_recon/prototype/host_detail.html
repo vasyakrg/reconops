@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — m3.prod.cluster.local</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+</head><body>
+<div class="app"><div id="sidebar-slot"></div>
+<main class="main">
+<header class="pg-hd">
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="crumbs"><a href="hosts.html">Hosts</a><span class="sep">/</span><span class="mono" style="color:var(--fg-1)">m3.prod.cluster.local</span></div>
+    <span class="badge warn"><span class="dot warn pulse" style="width:6px;height:6px"></span>degraded</span>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="btn sm ghost">Run ad-hoc</button>
+    <button class="btn sm ghost">Labels</button>
+    <button class="btn sm danger-ghost">Revoke cert</button>
+  </div>
+</header>
+<div class="pg-body" style="display:grid;grid-template-columns:320px 1fr;gap:18px">
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div class="panel">
+      <div class="panel-hd"><span>Identity</span></div>
+      <div style="padding:12px 14px;font-size:12px">
+        <div style="display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-family:var(--font-mono);font-size:11.5px">
+          <span class="muted">host_id</span><span style="color:var(--fg-0)">m3.prod.cluster.local</span>
+          <span class="muted">ip</span><span>10.0.0.13</span>
+          <span class="muted">cpu</span><span>8</span>
+          <span class="muted">ram</span><span>16G</span>
+          <span class="muted">os</span><span>Ubuntu 22.04</span>
+          <span class="muted">kernel</span><span style="font-size:10.5px">5.15.0-88-generic</span>
+          <span class="muted">agent</span><span>v0.1.3</span>
+          <span class="muted">enrolled</span><span>2026-03-14</span>
+          <span class="muted">cert fp</span><span style="font-size:10px">ab:34:…:e1</span>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd"><span>Labels</span><button class="btn xs ghost">edit</button></div>
+      <div style="padding:12px 14px;display:flex;gap:5px;flex-wrap:wrap">
+        <span class="chip"><span class="k">env</span>=<span class="v">prod</span></span>
+        <span class="chip"><span class="k">role</span>=<span class="v">k8s-master</span></span>
+        <span class="chip"><span class="k">dc</span>=<span class="v">msk-1</span></span>
+        <span class="chip"><span class="k">rack</span>=<span class="v">r-02</span></span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd"><span>Heartbeat · last 2h</span></div>
+      <div style="padding:12px 14px;display:flex;gap:2px;align-items:flex-end;height:70px">
+        ${Array.from({length:60},(_,i)=>{
+          const h = 20 + Math.floor(Math.random()*38);
+          const fail = i===51||i===52||i===53;
+          return `<div style="flex:1;height:${fail?10:h}px;background:${fail?'var(--err)':'var(--accent-dim)'};border-radius:1px" title="${fail?'offline':'ok'}"></div>`;
+        }).join('')}
+      </div>
+      <div style="padding:0 14px 10px;display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:10.5px;color:var(--fg-3)">
+        <span>2h ago</span><span>45m gap</span><span>now</span>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <nav style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:0">
+      <button class="btn sm" style="border:none;border-bottom:2px solid var(--accent);border-radius:0;background:transparent;color:var(--fg-0)">Overview</button>
+      <button class="btn sm ghost" style="border:none;border-radius:0">Recent runs</button>
+      <button class="btn sm ghost" style="border:none;border-radius:0">Recent findings <span class="badge warn" style="margin-left:4px">2</span></button>
+      <button class="btn sm ghost" style="border:none;border-radius:0">Collectors</button>
+      <button class="btn sm ghost" style="border:none;border-radius:0">Audit</button>
+    </nav>
+    <div class="panel">
+      <div class="panel-hd"><span>Available collectors</span><span class="muted mono" style="text-transform:none;letter-spacing:0;font-size:11px">10 of 10</span></div>
+      <div style="padding:4px 0">
+        ${['system_info','systemd_units','journal_tail','net_ifaces','net_listen','net_connect','dns_resolve','process_list','file_read','disk_usage'].map(c=>`
+          <div style="display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:12px">
+            <span class="mono" style="color:var(--fg-0);width:140px">${c}</span>
+            <span class="muted">${{'system_info':'uname, uptime, load, cpu, ram','systemd_units':'unit list + states','journal_tail':'journalctl window','net_ifaces':'ip addr / route','net_listen':'ss -tulpn','net_connect':'TCP/ICMP reach','dns_resolve':'resolver checks','process_list':'/proc snapshot','file_read':'whitelist read + hash','disk_usage':'df, inodes, du'}[c]}</span>
+            <button class="btn xs ghost" style="margin-left:auto">run</button>
+          </div>`).join('')}
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd"><span>Recent findings referencing this host</span></div>
+      <div>
+        <div class="finding"><div class="f-mark"></div><div class="f-body">
+          <div class="f-row"><span class="badge critical">critical</span><span class="f-code">cert.expired.kubelet</span><span class="muted mono" style="margin-left:auto;font-size:10.5px">14:04 · inv_…VPQAF</span></div>
+          <div class="f-msg">kubelet serving cert on m3 expired 2026-04-17T03:22Z — service refuses to start</div>
+        </div></div>
+        <div class="finding"><div class="f-mark"></div><div class="f-body">
+          <div class="f-row"><span class="badge info">info</span><span class="f-code">service.inactive</span><span class="muted mono" style="margin-left:auto;font-size:10.5px">14:03 · inv_…VPQAF</span></div>
+          <div class="f-msg">kubelet.service on m3 is inactive (dead) since 14:03:58</div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</main></div>
+<script src="static/hub.js"></script>
+<script>
+  document.getElementById('sidebar-slot').outerHTML = Recon.renderSidebar('hosts');
+  Recon.mountTweaks({});
+</script>
+</body></html>

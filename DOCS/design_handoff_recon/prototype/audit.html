@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — Audit</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+</head><body>
+<div class="app"><div id="sidebar-slot"></div>
+<main class="main">
+<header class="pg-hd">
+  <div><div class="title">Audit log</div><div class="sub mono">append-only · 2341 events · exportable</div></div>
+  <div style="display:flex;gap:8px">
+    <input type="search" placeholder="actor, action, details…" style="width:260px"/>
+    <button class="btn sm ghost">Export JSON</button>
+  </div>
+</header>
+<div class="pg-body">
+  <div class="panel"><div>
+  ${[
+    {t:'14:05:41',a:'vasyansk',act:'tool_call.approved',d:'inv_01JK3Z5VPQAF · step 6 · collect_batch file_read on m1,m2'},
+    {t:'14:04:31',a:'vasyansk',act:'finding.ignored',d:'F-4 pod.restart.coredns'},
+    {t:'14:04:22',a:'investigator',act:'finding.added',d:'F-1 critical cert.expired.kubelet'},
+    {t:'14:03:58',a:'investigator',act:'tool_call.proposed',d:'search_artifact on t_01JK3Z6A0003'},
+    {t:'14:02:48',a:'investigator',act:'tool_call.executed',d:'systemd_units on m3 · 312ms'},
+    {t:'14:02:11',a:'vasyansk',act:'investigation.created',d:'goal: "kubelet на m3 не джойнится…"'},
+    {t:'14:01:02',a:'vasyansk',act:'bootstrap.token.issued',d:'TTL 24h · for m6.prod enrollment'},
+    {t:'13:50:18',a:'system',act:'agent.enrolled',d:'w5.prod.cluster.local · fp ab:34…:e1'},
+    {t:'13:19:04',a:'vasyansk',act:'run.created',d:'run_01JK3Z4R process_list over role=k8s-worker'},
+    {t:'12:54:10',a:'system',act:'agent.offline',d:'w2.prod heartbeat timeout 120s'},
+  ].map(e=>`<div style="display:grid;grid-template-columns:80px 120px 200px 1fr;gap:12px;padding:8px 14px;border-bottom:1px solid var(--border);font-size:12px;align-items:center">
+    <span class="mono muted" style="font-size:11px">${e.t}</span>
+    <span style="display:flex;align-items:center;gap:6px"><span class="avatar" style="width:18px;height:18px;font-size:9px">${e.a.slice(0,2)}</span><span class="mono" style="color:var(--fg-1);font-size:11px">${e.a}</span></span>
+    <span class="mono" style="color:${e.act.includes('finding')?'var(--warn)':e.act.includes('approved')||e.act.includes('enrolled')?'var(--ok)':e.act.includes('offline')?'var(--err)':'var(--accent)'};font-size:11.5px">${e.act}</span>
+    <span class="mono muted" style="font-size:11.5px;color:var(--fg-1)">${e.d}</span>
+  </div>`).join('')}
+  </div></div>
+</div>
+</main></div>
+<script src="static/hub.js"></script>
+<script>
+document.getElementById('sidebar-slot').outerHTML = Recon.renderSidebar('audit');
+Recon.mountTweaks({});
+</script></body></html>

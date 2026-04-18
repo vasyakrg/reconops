@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — prototype index</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+  body{background:var(--bg-0);color:var(--fg-0);font-family:var(--font-sans);min-height:100vh}
+  .wrap{max-width:1120px;margin:0 auto;padding:48px 32px}
+  .hd{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+  .brand{width:36px;height:36px;color:var(--accent);display:inline-flex}
+  h1{font-size:26px;font-weight:600;letter-spacing:-0.02em;margin:0}
+  .lead{color:var(--fg-2);font-size:13.5px;margin:10px 0 40px;max-width:70ch;line-height:1.65}
+  .lead b{color:var(--fg-1);font-weight:500}
+  .sec{margin-bottom:38px}
+  .sec-hd{font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.08em;font-size:10.5px;color:var(--fg-3);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:6px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  a.card{display:block;padding:14px 16px;border:1px solid var(--border);border-radius:6px;text-decoration:none;color:inherit;background:var(--bg-1);transition:all .12s}
+  a.card:hover{border-color:var(--accent);background:var(--bg-2);transform:translateY(-1px)}
+  .ck{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+  .ck-num{font-family:var(--font-mono);font-size:10.5px;color:var(--fg-3);min-width:24px}
+  .ck-t{font-size:13.5px;font-weight:500;color:var(--fg-0)}
+  .ck-d{font-size:11.5px;color:var(--fg-2);font-family:var(--font-mono);line-height:1.5}
+  .pill{display:inline-block;font-family:var(--font-mono);font-size:9.5px;padding:1px 6px;border-radius:3px;background:rgba(127,176,255,0.12);color:var(--accent);border:1px solid rgba(127,176,255,0.25);text-transform:uppercase;letter-spacing:0.06em;margin-left:auto}
+  .pill.p1{background:rgba(234,179,8,0.12);color:var(--warn);border-color:rgba(234,179,8,0.25)}
+  .pill.p2{background:rgba(120,120,120,0.12);color:var(--fg-2);border-color:var(--border)}
+  .meta{font-family:var(--font-mono);font-size:11px;color:var(--fg-3);margin-top:28px;padding-top:14px;border-top:1px solid var(--border);display:flex;gap:22px}
+</style>
+</head><body>
+<div class="wrap">
+  <div class="hd">
+    <span class="brand" id="m"></span>
+    <h1>recon</h1>
+    <span class="mono" style="color:var(--fg-3);font-size:12px">prototype · v0.1.3 · k8s_cert_expired fixture</span>
+  </div>
+  <p class="lead">
+    Тикет: <b>LLM-driven диагностика небольшого парка</b>. Хаб говорит с агентами по mTLS, дёргает read-only коллекторы, а LLM-investigator планирует шаги, читает артефакты через <span class="mono">search_artifact</span>, и постит findings в живой timeline. Index ниже — все экраны из брифа. <b>Investigation detail</b> — главный экран, он двигается по SSE.
+  </p>
+
+  <div class="sec">
+    <div class="sec-hd">P0 — core loop</div>
+    <div class="grid">
+      <a class="card" href="investigations.html"><div class="ck"><span class="ck-num">01</span><span class="ck-t">Investigations list</span><span class="pill">P0</span></div><div class="ck-d">active / done / aborted · findings bar</div></a>
+      <a class="card" href="investigation_detail.html"><div class="ck"><span class="ck-num">02</span><span class="ck-t">Investigation detail</span><span class="pill">P0</span></div><div class="ck-d">3-col · goal · timeline · findings · SSE live</div></a>
+      <a class="card" href="hosts.html"><div class="ck"><span class="ck-num">03</span><span class="ck-t">Hosts list</span><span class="pill">P0</span></div><div class="ck-d">labels · heartbeat · agent version</div></a>
+      <a class="card" href="host_detail.html"><div class="ck"><span class="ck-num">04</span><span class="ck-t">Host detail</span><span class="pill">P0</span></div><div class="ck-d">identity · collectors · recent findings</div></a>
+      <a class="card" href="runs.html"><div class="ck"><span class="ck-num">05</span><span class="ck-t">Runs list</span><span class="pill">P0</span></div><div class="ck-d">collector × hosts fan-out</div></a>
+      <a class="card" href="run_detail.html"><div class="ck"><span class="ck-num">06</span><span class="ck-t">Run detail</span><span class="pill">P0</span></div><div class="ck-d">per-host status · artifact · raw json</div></a>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-hd">P1 — supporting</div>
+    <div class="grid">
+      <a class="card" href="collectors.html"><div class="ck"><span class="ck-num">07</span><span class="ck-t">Collectors registry</span><span class="pill p1">P1</span></div><div class="ck-d">10 catalog entries · inputs · reads</div></a>
+      <a class="card" href="audit.html"><div class="ck"><span class="ck-num">08</span><span class="ck-t">Audit log</span><span class="pill p1">P1</span></div><div class="ck-d">append-only · approve / ignore / proposed</div></a>
+      <a class="card" href="settings.html"><div class="ck"><span class="ck-num">09</span><span class="ck-t">Settings</span><span class="pill p1">P1</span></div><div class="ck-d">llm endpoint · budgets · tokens</div></a>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div class="sec-hd">P2 — auth</div>
+    <div class="grid">
+      <a class="card" href="login.html"><div class="ck"><span class="ck-num">10</span><span class="ck-t">Login</span><span class="pill p2">P2</span></div><div class="ck-d">operator-only · mTLS + user</div></a>
+    </div>
+  </div>
+
+  <div class="meta">
+    <span>tweaks panel on every screen: aesthetic × density × pending-variant × SSE sim controls</span>
+    <span style="margin-left:auto">open investigation_detail.html for the live demo</span>
+  </div>
+</div>
+<script src="static/hub.js"></script>
+<script>document.getElementById('m').innerHTML = Recon.BRAND;</script>
+</body></html>

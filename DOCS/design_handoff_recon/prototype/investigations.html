@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — Investigations</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+</head><body>
+<div class="app">
+  <div id="sidebar-slot"></div>
+  <main class="main">
+    <header class="pg-hd">
+      <div>
+        <div class="title">Investigations</div>
+        <div class="sub mono">3 active · 17 completed · 2 aborted this week</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="search" placeholder="filter by goal, host, code…" style="width:280px"/>
+        <button class="btn sm ghost" data-f="all">all <span class="mono muted" style="margin-left:4px">22</span></button>
+        <button class="btn sm ghost" data-f="active">active <span class="mono" style="color:var(--accent);margin-left:4px">3</span></button>
+        <button class="btn sm ghost" data-f="done">done</button>
+        <button class="btn primary">+ New investigation</button>
+      </div>
+    </header>
+    <div class="pg-body">
+      <div class="panel">
+        <table class="tbl" id="tbl"></table>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="static/hub.js"></script>
+<script>
+  document.getElementById('sidebar-slot').outerHTML = Recon.renderSidebar('investigations');
+  const rows = [
+    { id:'inv_01JK3Z5VPQAF', goal:'kubelet на m3 не джойнится в кластер после ребута; остальные ноды живы.', status:'active', steps:'7/40', tokens:'48.2k', f:{c:1,w:2,i:1,e:0}, created:'14:02 today', updated:'12s ago' },
+    { id:'inv_01JK3Z4HGXQ2', goal:'latency на api-gateway вырос в 3х за последний час, 5xx spike на w1/w2', status:'active', steps:'22/40', tokens:'186k', f:{c:0,w:3,i:5,e:0}, created:'13:18 today', updated:'1m ago' },
+    { id:'inv_01JK3Z2BVMNR', goal:'внеплановый ребут на m2 ночью — понять инициатора', status:'waiting', steps:'12/40', tokens:'71k', f:{c:0,w:1,i:3,e:0}, created:'09:04 today', updated:'2h ago' },
+    { id:'inv_01JK3YZ1AAAB', goal:'cron-controller OOM-killed на m3; cronjobs не фейерят кластер-вайд', status:'done', steps:'18/40', tokens:'142k', f:{c:1,w:2,i:4,e:0}, created:'yesterday 22:40', updated:'yesterday 23:18' },
+    { id:'inv_01JK3YY0CCDD', goal:'coredns restart loop на kube-system', status:'done', steps:'9/40', tokens:'52k', f:{c:0,w:1,i:2,e:0}, created:'yesterday 14:11', updated:'yesterday 14:26' },
+    { id:'inv_01JK3YX7EEEE', goal:'disk 98% на node-storage-4; ложная тревога или нет', status:'aborted', steps:'3/40', tokens:'8k', f:{c:0,w:0,i:0,e:0}, created:'2d ago 11:00', updated:'2d ago 11:04' },
+  ];
+  const st2badge = { active:'accent', waiting:'pending', done:'ok', aborted:'err' };
+  document.getElementById('tbl').innerHTML = `
+    <thead><tr>
+      <th style="width:180px">ID</th>
+      <th>Goal</th>
+      <th style="width:90px">Status</th>
+      <th style="width:70px">Steps</th>
+      <th style="width:80px">Tokens</th>
+      <th style="width:160px">Findings</th>
+      <th style="width:140px">Created</th>
+      <th style="width:110px">Updated</th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr onclick="location='investigation_detail.html'">
+        <td><span class="mono" style="color:var(--fg-1);font-size:11.5px">${r.id.slice(0,18)}</span></td>
+        <td style="max-width:440px"><div class="trunc" style="color:var(--fg-0)">${r.goal}</div></td>
+        <td><span class="badge ${st2badge[r.status]}"><span class="dot ${r.status==='active'?'info pulse':r.status==='done'?'ok':r.status==='waiting'?'pending':'err'}" style="width:6px;height:6px"></span>${r.status}</span></td>
+        <td class="mono" style="color:var(--fg-1);font-size:11.5px">${r.steps}</td>
+        <td class="mono" style="color:var(--fg-1);font-size:11.5px">${r.tokens}</td>
+        <td>
+          <div style="display:flex;gap:3px;align-items:center;font-family:var(--font-mono);font-size:10.5px">
+            ${r.f.c?`<span style="color:var(--critical)">${r.f.c}c</span>`:''}
+            ${r.f.w?`<span style="color:var(--warn)">${r.f.w}w</span>`:''}
+            ${r.f.i?`<span style="color:var(--info)">${r.f.i}i</span>`:''}
+            ${!r.f.c&&!r.f.w&&!r.f.i?'<span class="muted">—</span>':''}
+            <div style="flex:1;display:flex;gap:1px;margin-left:6px">
+              ${Array(r.f.c).fill('<span style="width:3px;height:14px;background:var(--critical)"></span>').join('')}
+              ${Array(r.f.w).fill('<span style="width:3px;height:14px;background:var(--warn)"></span>').join('')}
+              ${Array(r.f.i).fill('<span style="width:3px;height:14px;background:var(--info)"></span>').join('')}
+            </div>
+          </div>
+        </td>
+        <td class="mono muted" style="font-size:11px">${r.created}</td>
+        <td class="mono muted" style="font-size:11px">${r.updated}</td>
+      </tr>`).join('')}</tbody>`;
+  Recon.mountTweaks({ demoActions:[] });
+</script>
+</body></html>

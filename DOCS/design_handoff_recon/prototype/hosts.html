@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — Hosts</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+</head><body>
+<div class="app"><div id="sidebar-slot"></div>
+<main class="main">
+<header class="pg-hd">
+  <div><div class="title">Hosts</div><div class="sub mono" id="stats">5 registered · 4 online · 1 offline</div></div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <input type="search" placeholder="label selector: role=k8s-master,env=prod" style="width:340px" class="mono"/>
+    <button class="btn sm ghost">Columns</button>
+    <button class="btn primary">+ Enroll token</button>
+  </div>
+</header>
+<div class="pg-body">
+  <div class="panel"><table class="tbl" id="tbl"></table></div>
+</div>
+</main></div>
+<script src="static/hub.js"></script>
+<script>
+  document.getElementById('sidebar-slot').outerHTML = Recon.renderSidebar('hosts');
+  const hosts = Recon.FIXTURE.hosts;
+  document.getElementById('tbl').innerHTML = `
+  <thead><tr>
+    <th style="width:30px"></th>
+    <th>Host ID</th>
+    <th style="width:240px">Labels</th>
+    <th style="width:120px">IP</th>
+    <th style="width:100px">OS / kernel</th>
+    <th style="width:70px">CPU</th>
+    <th style="width:70px">RAM</th>
+    <th style="width:110px">Agent</th>
+    <th style="width:120px">Last seen</th>
+    <th style="width:50px"></th>
+  </tr></thead><tbody>
+  ${hosts.map(h => `
+    <tr onclick="location='host_detail.html'">
+      <td><span class="dot ${h.status==='online'?'ok pulse':h.status==='offline'?'offline':'warn pulse'}"></span></td>
+      <td class="mono" style="color:var(--fg-0);font-size:12px">${h.id}</td>
+      <td>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          ${Object.entries(h.labels).map(([k,v])=>`<span class="chip"><span class="k">${k}</span><span class="muted">=</span><span class="v">${v}</span></span>`).join('')}
+        </div>
+      </td>
+      <td class="mono" style="color:var(--fg-1)">${h.ip}</td>
+      <td class="mono muted" style="font-size:11px">Ubuntu 22.04<br/><span style="font-size:10.5px">${h.kernel}</span></td>
+      <td class="mono" style="color:var(--fg-1)">${h.cpu}</td>
+      <td class="mono" style="color:var(--fg-1)">${h.ram}G</td>
+      <td class="mono muted" style="font-size:11px">v0.1.3</td>
+      <td class="mono muted" style="font-size:11px">${h.last_seen}</td>
+      <td><button class="btn xs ghost">⋯</button></td>
+    </tr>`).join('')}
+  </tbody>`;
+  Recon.mountTweaks({});
+</script></body></html>

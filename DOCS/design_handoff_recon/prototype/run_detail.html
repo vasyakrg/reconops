@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — run_01JK3Z4R</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+</head><body>
+<div class="app"><div id="sidebar-slot"></div>
+<main class="main">
+<header class="pg-hd">
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="crumbs"><a href="runs.html">Runs</a><span class="sep">/</span><span class="mono" style="color:var(--fg-1)">run_01JK3Z4R</span></div>
+    <span class="badge warn">partial · 4/5 ok</span>
+  </div>
+  <div style="display:flex;gap:8px"><button class="btn sm ghost">Re-run</button><button class="btn sm ghost">Compare hosts</button></div>
+</header>
+<div class="pg-body">
+  <div class="panel" style="margin-bottom:14px;padding:14px">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;font-family:var(--font-mono);font-size:11.5px">
+      <div><div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Collector</div><div style="color:var(--fg-0)">process_list</div></div>
+      <div><div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Params</div><div style="color:var(--fg-1)">sort_by=cpu, limit=20</div></div>
+      <div><div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Selector</div><div style="color:var(--fg-1)">role=k8s-worker</div></div>
+      <div><div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Started</div><div style="color:var(--fg-1)">2026-04-17 13:19:04</div></div>
+      <div><div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Duration</div><div style="color:var(--fg-1)">2.1s wall · 5.4s cum</div></div>
+    </div>
+  </div>
+  <div class="panel"><table class="tbl"><thead><tr><th style="width:30px"></th><th>Host</th><th style="width:90px">Status</th><th style="width:100px">Duration</th><th>Result summary</th><th style="width:120px">Artifact</th><th style="width:80px"></th></tr></thead><tbody>
+  ${[
+    {h:'w1.prod',ok:true, d:412, s:'20 processes · top cpu: kubelet 12.4%, containerd 8.1%', art:'process_list.json · 38KB'},
+    {h:'w2.prod',ok:false,d:30000,s:'timeout after 30s — agent offline since 12:12', art:'—'},
+    {h:'w3.prod',ok:true, d:387, s:'20 processes · top cpu: kube-proxy 6.2%, dockerd 4.1%', art:'process_list.json · 34KB'},
+    {h:'w4.prod',ok:true, d:451, s:'20 processes · top cpu: kubelet 9.8%, stress-ng 44.1%', art:'process_list.json · 39KB'},
+    {h:'w5.prod',ok:true, d:397, s:'20 processes · top cpu: kubelet 10.1%, filebeat 3.3%', art:'process_list.json · 35KB'},
+  ].map(r=>`<tr>
+    <td><span class="dot ${r.ok?'ok':'err'}" style="width:7px;height:7px"></span></td>
+    <td class="mono" style="color:var(--fg-0)">${r.h}</td>
+    <td><span class="badge ${r.ok?'ok':'err'}">${r.ok?'ok':'timeout'}</span></td>
+    <td class="mono" style="color:var(--fg-1)">${r.d}ms</td>
+    <td style="color:var(--fg-1);font-size:12px">${r.s}</td>
+    <td class="mono muted" style="font-size:11px">${r.art}</td>
+    <td><button class="btn xs ghost">json</button></td>
+  </tr>`).join('')}</tbody></table></div>
+</div>
+</main></div>
+<script src="static/hub.js"></script>
+<script>
+document.getElementById('sidebar-slot').outerHTML = Recon.renderSidebar('runs');
+Recon.mountTweaks({});
+</script></body></html>

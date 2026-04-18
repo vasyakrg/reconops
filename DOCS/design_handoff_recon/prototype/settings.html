@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — Settings</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+</head><body>
+<div class="app"><div id="sidebar-slot"></div>
+<main class="main">
+<header class="pg-hd"><div><div class="title">Settings</div><div class="sub mono">hub.yaml overrides · read-only where system-managed</div></div></header>
+<div class="pg-body" style="display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:18px;max-width:1200px">
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div class="panel">
+      <div class="panel-hd"><span>LLM endpoint</span><span class="badge ok">key present</span></div>
+      <div style="padding:14px;display:grid;grid-template-columns:180px 1fr;gap:12px 16px;font-size:12.5px;align-items:center">
+        <span class="muted">Base URL</span><input type="text" value="https://openrouter.ai/api/v1" class="mono"/>
+        <span class="muted">Model</span><select><option selected>anthropic/claude-sonnet-4.5</option><option>anthropic/claude-opus-4.6</option></select>
+        <span class="muted">API key env</span><input type="text" value="RECON_LLM_API_KEY" class="mono"/>
+        <span class="muted">HTTP referer</span><input type="text" value="https://recon.example.com" class="mono"/>
+        <span class="muted">X-Title</span><input type="text" value="Recon"/>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd"><span>Budgets</span></div>
+      <div style="padding:14px;display:grid;grid-template-columns:180px 1fr;gap:12px 16px;font-size:12.5px;align-items:center">
+        <span class="muted">Max steps / investigation</span><input type="text" value="40" class="mono" style="max-width:120px"/>
+        <span class="muted">Max tokens / investigation</span><input type="text" value="500000" class="mono" style="max-width:120px"/>
+        <span class="muted">Broad selector threshold</span><input type="text" value="5" class="mono" style="max-width:120px"/>
+        <span class="muted">Per-agent rate limit</span><input type="text" value="30/min" class="mono" style="max-width:120px"/>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd"><span>Storage</span></div>
+      <div style="padding:14px;display:grid;grid-template-columns:180px 1fr;gap:12px 16px;font-size:12.5px;align-items:center">
+        <span class="muted">SQLite</span><span class="mono" style="color:var(--fg-1)">/var/lib/recon/recon.db</span>
+        <span class="muted">Artifacts dir</span><span class="mono" style="color:var(--fg-1)">/var/lib/recon/artifacts <span class="muted">· 482 MB</span></span>
+        <span class="muted">Retention</span><input type="text" value="30 days" class="mono" style="max-width:120px"/>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn ghost">Revert</button><button class="btn primary">Save changes</button></div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div class="panel">
+      <div class="panel-hd"><span>Bootstrap tokens</span><button class="btn xs ghost">+ new</button></div>
+      <div>
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px"><div class="mono" style="color:var(--fg-0);font-size:11px">rcn-…bf3e-a102</div><div class="muted t-xs mono" style="margin-top:3px">TTL: 22h left · unused</div></div>
+        <div style="padding:10px 14px;font-size:12px"><div class="mono" style="color:var(--fg-2);font-size:11px;text-decoration:line-through">rcn-…a829-ff40</div><div class="muted t-xs mono" style="margin-top:3px">used by m4.prod · 3d ago</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd"><span>Admins</span></div>
+      <div>
+        <div style="padding:10px 14px;display:flex;align-items:center;gap:10px"><span class="avatar">vs</span><div style="flex:1"><div style="color:var(--fg-0);font-size:12.5px">vasyansk</div><div class="muted mono" style="font-size:10.5px">owner</div></div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-hd"><span>mTLS</span></div>
+      <div style="padding:12px 14px;font-size:11.5px;font-family:var(--font-mono);display:flex;flex-direction:column;gap:4px">
+        <span class="muted">hub cert exp: <span style="color:var(--ok)">2027-01-14</span></span>
+        <span class="muted">clients CA: <span style="color:var(--fg-1)">recon-ca-2026</span></span>
+      </div>
+    </div>
+  </div>
+</div>
+</main></div>
+<script src="static/hub.js"></script>
+<script>
+document.getElementById('sidebar-slot').outerHTML = Recon.renderSidebar('settings');
+Recon.mountTweaks({});
+</script></body></html>

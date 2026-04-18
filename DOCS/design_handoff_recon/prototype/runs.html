@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><title>Recon — Runs</title>
+<meta name="viewport" content="width=1280"/>
+<link rel="stylesheet" href="static/hub.css"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+</head><body>
+<div class="app"><div id="sidebar-slot"></div>
+<main class="main">
+<header class="pg-hd">
+  <div><div class="title">Runs</div><div class="sub mono">138 total · 6 last 1h</div></div>
+  <div style="display:flex;gap:8px"><input type="search" placeholder="collector, host, investigation…" style="width:280px"/><button class="btn primary">+ New run</button></div>
+</header>
+<div class="pg-body"><div class="panel"><table class="tbl" id="tbl"></table></div></div>
+</main></div>
+<script src="static/hub.js"></script>
+<script>
+document.getElementById('sidebar-slot').outerHTML = Recon.renderSidebar('runs');
+const runs = [
+  {id:'run_01JK3Z7A', coll:'file_read', hosts:'m1,m2', inv:'inv_…VPQAF', status:'ok', started:'14:05:41', dur:'0.5s'},
+  {id:'run_01JK3Z6C', coll:'journal_tail', hosts:'m3', inv:'inv_…VPQAF', status:'ok', started:'14:03:18', dur:'0.4s'},
+  {id:'run_01JK3Z5E', coll:'systemd_units', hosts:'m3', inv:'inv_…VPQAF', status:'ok', started:'14:02:48', dur:'0.3s'},
+  {id:'run_01JK3Z4R', coll:'process_list', hosts:'w1,w2', inv:'inv_…HGXQ2', status:'partial', started:'13:19:04', dur:'2.1s'},
+  {id:'run_01JK3Z3T', coll:'net_listen', hosts:'5 hosts', inv:'manual', status:'ok', started:'13:08:22', dur:'1.2s'},
+  {id:'run_01JK3Z2W', coll:'disk_usage', hosts:'w2', inv:'manual', status:'error', started:'12:54:10', dur:'30s'},
+];
+const b={ok:'ok',partial:'warn',error:'err'};
+document.getElementById('tbl').innerHTML = `
+<thead><tr><th style="width:150px">Run</th><th style="width:180px">Collector</th><th style="width:200px">Hosts</th><th>Investigation</th><th style="width:90px">Status</th><th style="width:120px">Started</th><th style="width:80px">Duration</th></tr></thead>
+<tbody>${runs.map(r=>`<tr onclick="location='run_detail.html'">
+<td class="mono" style="color:var(--fg-0);font-size:11.5px">${r.id}</td>
+<td class="mono" style="color:var(--fg-1)">${r.coll}</td>
+<td class="mono muted" style="font-size:11.5px">${r.hosts}</td>
+<td class="mono" style="color:var(--fg-2);font-size:11.5px">${r.inv}</td>
+<td><span class="badge ${b[r.status]}">${r.status}</span></td>
+<td class="mono muted" style="font-size:11px">${r.started}</td>
+<td class="mono" style="color:var(--fg-1)">${r.dur}</td>
+</tr>`).join('')}</tbody>`;
+Recon.mountTweaks({});
+</script></body></html>
