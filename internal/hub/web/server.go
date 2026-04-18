@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,6 +25,9 @@ import (
 
 //go:embed templates/*.html
 var tplFS embed.FS
+
+//go:embed static/*
+var staticFS embed.FS
 
 type Server struct {
 	store    *store.Store
@@ -80,6 +84,7 @@ func (s *Server) Routes() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.Handle("/static/", staticHandler())
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 
@@ -381,7 +386,62 @@ func (s *Server) renderForReq(w http.ResponseWriter, r *http.Request, page strin
 	data["CSRF"] = s.csrfTokenFor(r)
 	data["AuthEnabled"] = s.auth.Enabled()
 	data["Username"] = authedUser(r)
+	if _, ok := data["ActiveNav"]; !ok {
+		data["ActiveNav"] = activeNavFor(page)
+	}
+	if _, ok := data["Title"]; !ok {
+		data["Title"] = page
+	}
+	if _, ok := data["Version"]; !ok {
+		data["Version"] = version.Version
+	}
+	if cnt, err := s.store.NavCounts(r.Context()); err == nil {
+		data["HostCount"] = cnt.Hosts
+		data["InvestigationsActive"] = cnt.InvestigationsActive
+		data["CollectorCount"] = cnt.Collectors
+	}
 	s.render(w, page, data)
+}
+
+// activeNavFor maps an internal page name to a sidebar nav key so the layout
+// can highlight the right item without each handler having to set it.
+func activeNavFor(page string) string {
+	switch page {
+	case "hosts", "host_detail":
+		return "hosts"
+	case "collectors":
+		return "collectors"
+	case "runs_list", "run_detail":
+		return "runs"
+	case "investigations_list", "investigation_detail":
+		return "investigations"
+	case "audit":
+		return "audit"
+	case "settings":
+		return "settings"
+	}
+	return ""
+}
+
+// staticHandler serves embedded /static/* assets with conservative caching.
+// Strips the URL prefix so the FS path mirrors the embed layout.
+func staticHandler() http.Handler {
+	sub, _ := fs.Sub(staticFS, "static")
+	fs := http.FileServer(http.FS(sub))
+	return http.StripPrefix("/static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		fs.ServeHTTP(w, r)
+	}))
+}
+
+// renderStandalone executes a complete page template by name without
+// wrapping it in the global layout/sidebar shell. Used for chrome-less
+// pages like /login.
+func (s *Server) renderStandalone(w http.ResponseWriter, page string, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tpl.ExecuteTemplate(w, page, data); err != nil {
+		s.log.Error("render standalone", "page", page, "err", err)
+	}
 }
 
 // render executes layout.html, dynamically aliasing the "content" block to
@@ -394,7 +454,10 @@ func (s *Server) render(w http.ResponseWriter, page string, data any) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if _, err := t.New("content").Parse(fmt.Sprintf(`{{template %q .}}`, page)); err != nil {
+	// Wrap each per-page template in <div class="pg-body"> so individual
+	// pages don't need to know about the layout chrome. Per-page header
+	// strips (.pg-hd) live inside the page template when needed.
+	if _, err := t.New("content").Parse(fmt.Sprintf(`<div class="pg-body">{{template %q .}}</div>`, page)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

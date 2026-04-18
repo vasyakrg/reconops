@@ -1,47 +1,79 @@
 {{define "layout"}}<!doctype html>
-<html lang="en">
+<html lang="en" data-aesthetic="k9s" data-density="compact">
 <head>
 <meta charset="utf-8">
-<title>Recon — {{.Title}}</title>
-<style>
-  body { font-family: -apple-system, system-ui, sans-serif; max-width: 1100px; margin: 2em auto; padding: 0 1em; color: #222; }
-  h1 { margin-bottom: 0; }
-  nav a { margin-right: 1em; }
-  table { border-collapse: collapse; width: 100%; margin-top: 1em; }
-  th, td { padding: 6px 10px; border-bottom: 1px solid #ddd; text-align: left; font-size: 14px; }
-  th { background: #f7f7f7; }
-  .status-online   { color: #1a7f37; font-weight: 600; }
-  .status-offline  { color: #c93c37; font-weight: 600; }
-  .status-degraded { color: #b58900; font-weight: 600; }
-  .small { color: #888; font-size: 12px; }
-  .empty { color: #888; font-style: italic; }
-  pre { background: #f4f4f4; padding: 8px; overflow: auto; font-size: 12px; }
-  .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-  .badge-ok       { background: #d6f5d6; color: #1a7f37; }
-  .badge-error    { background: #fbdada; color: #c93c37; }
-  .badge-pending  { background: #fff3c2; color: #8a6a00; }
-  .badge-running  { background: #d6e6ff; color: #1f51a8; }
-  .badge-info     { background: #e8e8e8; color: #555; }
-  details { margin: 4px 0; }
-  details summary { cursor: pointer; }
-  form.inline { display: inline; }
-  button, input[type=submit] { padding: 4px 8px; font-size: 12px; }
-  .hint-warn  { color: #b58900; }
-  .hint-error { color: #c93c37; }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>recon — {{.Title}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/static/hub.css">
+<link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='9' fill='none' stroke='%23a8ff7a' stroke-width='1.4' stroke-dasharray='2 2' opacity='.6'/><circle cx='12' cy='12' r='5' fill='none' stroke='%23a8ff7a' stroke-width='1.4'/><path d='M12 3v4M12 17v4M3 12h4M17 12h4' stroke='%23a8ff7a' stroke-width='1.4' fill='none'/><circle cx='12' cy='12' r='1.4' fill='%23a8ff7a'/></svg>">
 </head>
-<body>
-  <h1>Recon</h1>
-  <p class="small">Read-only diagnostic hub · v{{.Version}}</p>
-  <nav>
-    <a href="/hosts">Hosts</a>
-    <a href="/collectors">Collectors</a>
-    <a href="/runs">Runs</a>
-    <a href="/investigations">Investigations</a>
-    <a href="/audit">Audit</a>
-    <a href="/settings">Settings</a>
-    {{if .AuthEnabled}}<span class="small" style="float:right">{{.Username}} · <a href="/logout">logout</a></span>{{end}}
-  </nav>
-  {{template "content" .}}
+<body data-active="{{.ActiveNav}}">
+<div class="mobile-warn">
+  <div style="font-size:18px;color:var(--fg-0)">recon</div>
+  <div>Desktop only — viewport must be ≥ 1280px wide.</div>
+</div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">{{template "brand_svg" .}}</span>
+      <span class="brand-name">recon</span>
+      <span class="brand-ver">v{{.Version}}</span>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Fleet</div>
+      <a class="nav-item" data-nav="hosts" href="/hosts">{{template "icon_server" .}}<span>Hosts</span>{{if .HostCount}}<span class="count">{{.HostCount}}</span>{{end}}</a>
+      <a class="nav-item" data-nav="collectors" href="/collectors">{{template "icon_puzzle" .}}<span>Collectors</span>{{if .CollectorCount}}<span class="count">{{.CollectorCount}}</span>{{end}}</a>
+      <a class="nav-item" data-nav="runs" href="/runs">{{template "icon_play" .}}<span>Runs</span></a>
+
+      <div class="nav-section-label">Investigate</div>
+      <a class="nav-item" data-nav="investigations" href="/investigations">{{template "icon_search" .}}<span>Investigations</span>{{if .InvestigationsActive}}<span class="count">{{.InvestigationsActive}}</span>{{end}}</a>
+
+      <div class="nav-section-label">System</div>
+      <a class="nav-item" data-nav="audit" href="/audit">{{template "icon_scroll" .}}<span>Audit</span></a>
+      <a class="nav-item" data-nav="settings" href="/settings">{{template "icon_gear" .}}<span>Settings</span></a>
+    </nav>
+    <div class="sidebar-footer">
+      {{if .AuthEnabled}}
+      <div class="user-row">
+        <span class="avatar">{{slice .Username 0 2}}</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:var(--fg-0);font-size:12px" class="trunc">{{.Username}}</div>
+          <div style="font-size:10.5px;color:var(--fg-3)">admin</div>
+        </div>
+        <a href="/logout" class="btn icon ghost" title="Log out" style="color:var(--fg-2)">{{template "icon_logout" .}}</a>
+      </div>
+      {{end}}
+      <div style="display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:11px">
+        <span class="dot ok pulse"></span>
+        <span style="color:var(--fg-1)">hub</span>
+        <span class="muted">read-only</span>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    {{template "content" .}}
+  </main>
+</div>
+
+<script src="/static/hub.js"></script>
 </body>
 </html>{{end}}
+
+{{/* ---- inline SVGs reused across pages ---- */}}
+{{define "brand_svg"}}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-dasharray="2 2" opacity="0.55"/><circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/></svg>{{end}}
+
+{{define "icon_server"}}<svg viewBox="0 0 24 24"><path d="M2 4h20v6H2zM2 14h20v6H2zM6 7h.01M6 17h.01"/></svg>{{end}}
+{{define "icon_puzzle"}}<svg viewBox="0 0 24 24"><path d="M19.4 13a2 2 0 0 0 0-4 2 2 0 0 0-2-2V5a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v.6a2 2 0 1 1 0 4V11h-.6a2 2 0 1 0 0 4H11v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2h.4a2 2 0 0 0 2-2z"/></svg>{{end}}
+{{define "icon_play"}}<svg viewBox="0 0 24 24"><path d="M5 3l14 9-14 9z"/></svg>{{end}}
+{{define "icon_search"}}<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>{{end}}
+{{define "icon_scroll"}}<svg viewBox="0 0 24 24"><path d="M6 3h12v18l-4-2-4 2-4-2zM10 8h4M10 12h4M10 16h4"/></svg>{{end}}
+{{define "icon_gear"}}<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.2-1.7l2-1.5-2-3.4-2.3.9a7 7 0 0 0-3-1.7L13 2h-2l-.5 2.6a7 7 0 0 0-3 1.7l-2.3-1-2 3.5 2 1.5A7 7 0 0 0 5 12a7 7 0 0 0 .2 1.7l-2 1.5 2 3.4 2.3-.9a7 7 0 0 0 3 1.7L11 22h2l.5-2.6a7 7 0 0 0 3-1.7l2.3 1 2-3.5-2-1.5c.1-.5.2-1.1.2-1.7z"/></svg>{{end}}
+{{define "icon_logout"}}<svg viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>{{end}}
+
+{{/* page header helpers — pages can either render their own .pg-hd or use these */}}
+{{define "pg_hd_title"}}<header class="pg-hd"><div><div class="title">{{.Title}}</div>{{if .Sub}}<div class="sub">{{.Sub}}</div>{{end}}</div>{{if .Actions}}<div class="actions">{{.Actions}}</div>{{end}}</header>{{end}}

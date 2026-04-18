@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/vasyakrg/recon/internal/common/version"
 )
 
 // authConfig is what the hub passes to the web layer at construction. The
@@ -340,9 +342,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		s.render(w, "login", map[string]any{
+		s.renderStandalone(w, "login", map[string]any{
 			"Title":   "Login",
-			"Version": "",
+			"Version": version.Version,
 			"Next":    r.URL.Query().Get("next"),
 		})
 	case http.MethodPost:

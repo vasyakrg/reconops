@@ -1,9 +1,32 @@
-{{define "login"}}
-<h2>Login</h2>
-<form method="post" action="/login">
-  <input type="hidden" name="next" value="{{.Next}}">
-  <p><label>Username: <input type="text" name="username" autofocus required></label></p>
-  <p><label>Password: <input type="password" name="password" required></label></p>
-  <p><button type="submit">Sign in</button></p>
-</form>
-{{end}}
+{{define "login"}}<!doctype html>
+<html lang="en" data-aesthetic="k9s" data-density="compact">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>recon — sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/static/hub.css">
+</head>
+<body>
+<div class="login-bg">
+  <form method="post" action="/login" class="login-card">
+    <div class="login-brand">
+      <span class="brand-mark">{{template "brand_svg" .}}</span>
+      <span class="brand-name">recon</span>
+    </div>
+    <input type="hidden" name="next" value="{{.Next}}">
+    <label for="login-username">Username</label>
+    <input id="login-username" type="text" name="username" autofocus required autocomplete="username">
+    <label for="login-password">Password</label>
+    <input id="login-password" type="password" name="password" required autocomplete="current-password">
+    <div class="actions"><button class="btn primary" type="submit">Sign in</button></div>
+    <div class="login-foot">
+      hub · v{{.Version}}
+      <span class="reassure">read-only diagnostic system · by construction no write operations exist</span>
+    </div>
+  </form>
+</div>
+</body>
+</html>{{end}}
