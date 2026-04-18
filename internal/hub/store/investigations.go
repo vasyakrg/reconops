@@ -347,6 +347,30 @@ func (s *Store) ListFindings(ctx context.Context, investigationID string) ([]Fin
 	return out, rows.Err()
 }
 
+// SnapshotCounters returns a small fingerprint used by SSE to decide when
+// the page should self-refresh: status, tool_call count, last tool_call
+// status, and findings count — in one query (review M8).
+func (s *Store) SnapshotCounters(ctx context.Context, invID string) (status, lastTCStatus string, steps, findings int, err error) {
+	err = s.db.QueryRowContext(ctx, `
+        SELECT i.status,
+               COALESCE((SELECT status FROM tool_calls WHERE investigation_id=i.id ORDER BY seq DESC LIMIT 1), ''),
+               (SELECT COUNT(*) FROM tool_calls WHERE investigation_id=i.id),
+               (SELECT COUNT(*) FROM findings   WHERE investigation_id=i.id)
+          FROM investigations i WHERE i.id=?`, invID).
+		Scan(&status, &lastTCStatus, &steps, &findings)
+	return
+}
+
+// MarkMessagesArchived flags every message in [investigationID, seq <= upToSeq]
+// as archived. Subsequent ListMessages(.., includeArchived=false) skips them.
+// Used by compaction (week 5).
+func (s *Store) MarkMessagesArchived(ctx context.Context, investigationID string, upToSeq int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET archived=1 WHERE investigation_id=? AND seq<=?`,
+		investigationID, upToSeq)
+	return err
+}
+
 // SetFindingPinned and SetFindingIgnored toggle the corresponding flag for
 // a finding. Used by the operator UI in week 4 to curate the memo.
 func (s *Store) SetFindingPinned(ctx context.Context, id string, pinned bool) error {

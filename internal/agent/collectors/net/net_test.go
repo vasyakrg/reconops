@@ -8,6 +8,23 @@ import (
 	"github.com/vasyakrg/recon/internal/agent/collect"
 )
 
+// FuzzParseSS feeds arbitrary bytes through parseSS — must not panic and
+// must always return a slice (possibly empty). Run with `go test -fuzz=.`.
+func FuzzParseSS(f *testing.F) {
+	seeds := []string{
+		"",
+		"Netid State Local Address:Port Peer Process\ntcp LISTEN 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=1,fd=3))\n",
+		"\x00\x00\n\n",
+		"a b c d e f g h i j k\n",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		_ = parseSS(body) // must not panic
+	})
+}
+
 func TestParseSS(t *testing.T) {
 	body := `Netid  State    Recv-Q  Send-Q  Local Address:Port  Peer Address:Port  Process
 tcp    LISTEN   0       128     0.0.0.0:22          0.0.0.0:*          users:(("sshd",pid=1234,fd=3))

@@ -63,6 +63,45 @@ run-hub: build-hub ## Run hub locally
 run-agent: build-agent ## Run agent locally
 	./$(AGENT_BIN) --config ./deploy/dev/agent.yaml
 
+.PHONY: dist
+dist: dist-hub dist-agent ## Build static dist tarballs (linux/amd64 + arm64)
+
+DIST_DIR := dist
+DIST_VER := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
+.PHONY: dist-hub
+dist-hub:
+	@mkdir -p $(DIST_DIR)
+	@for arch in amd64 arm64; do \
+		echo "==> recon-hub linux/$$arch"; \
+		mkdir -p $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/{bin,deploy/systemd,deploy/nginx,deploy/docs}; \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
+		  $(GO) build -ldflags "$(LDFLAGS)" \
+		  -o $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/bin/recon-hub ./cmd/hub; \
+		cp deploy/systemd/recon-hub.service $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/deploy/systemd/; \
+		cp deploy/nginx/recon.conf          $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/deploy/nginx/; \
+		cp deploy/docs/install.md           $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/deploy/docs/; \
+		tar czf $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch.tar.gz \
+		  -C $(DIST_DIR) recon-hub-$(DIST_VER)-linux-$$arch; \
+		rm -rf $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch; \
+	done
+
+.PHONY: dist-agent
+dist-agent:
+	@mkdir -p $(DIST_DIR)
+	@for arch in amd64 arm64; do \
+		echo "==> recon-agent linux/$$arch"; \
+		mkdir -p $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/{bin,deploy/systemd,deploy/sudoers}; \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
+		  $(GO) build -ldflags "$(LDFLAGS)" \
+		  -o $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/bin/recon-agent ./cmd/agent; \
+		cp deploy/systemd/recon-agent.service $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/deploy/systemd/; \
+		cp deploy/sudoers/recon               $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/deploy/sudoers/; \
+		tar czf $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch.tar.gz \
+		  -C $(DIST_DIR) recon-agent-$(DIST_VER)-linux-$$arch; \
+		rm -rf $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch; \
+	done
+
 .PHONY: clean
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) $(DIST_DIR)

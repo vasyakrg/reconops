@@ -1,0 +1,36 @@
+[Unit]
+Description=Recon hub — read-only diagnostic LLM-driven SRE assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=recon
+Group=recon
+ExecStart=/usr/local/bin/recon-hub --config /etc/recon/hub.yaml --mode serve
+Restart=on-failure
+RestartSec=5s
+
+# Environment file holds RECON_LLM_API_KEY, RECON_ADMIN_USER,
+# RECON_ADMIN_PASSWORD_HASH (mode 0600, owned by recon:recon).
+EnvironmentFile=-/etc/recon/hub.env
+
+# Hardening (PROJECT.md §3.4 layer 4 — read-only host).
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/recon
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+// FuzzParseUnits / FuzzSummarizeJournal — must not panic on arbitrary input.
+func FuzzParseUnits(f *testing.F) {
+	f.Add([]byte(`[]`))
+	f.Add([]byte(`[{"unit":"x","load":"loaded","active":"active","sub":"r","description":"y"}]`))
+	f.Add([]byte(`{"truncated"`))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		_, _ = parseUnits(body)
+	})
+}
+
+func FuzzSummarizeJournal(f *testing.F) {
+	f.Add([]byte(`{"PRIORITY":"3","MESSAGE":"x","_SYSTEMD_UNIT":"u","__REALTIME_TIMESTAMP":"1"}`))
+	f.Add([]byte(""))
+	f.Add([]byte(`{"PRIORITY":"4"`))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		_, _ = summarizeJournal("u", "1h", body)
+	})
+}
+
 func TestParseUnits(t *testing.T) {
 	body := []byte(`[
 {"unit":"sshd.service","load":"loaded","active":"active","sub":"running","description":"OpenSSH server"},

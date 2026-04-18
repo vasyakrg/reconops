@@ -1,0 +1,38 @@
+[Unit]
+Description=Recon agent — read-only diagnostic data collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=recon
+Group=recon
+ExecStart=/usr/local/bin/recon-agent --config /etc/recon/agent.yaml
+Restart=on-failure
+RestartSec=5s
+
+# Hardening (PROJECT.md §3.4 layer 4 — read-only host).
+# The agent is read-only by design; layered host protections defend in depth
+# in case any future collector slips past forbidigo/depguard linters.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/recon
+
+# Some collectors need privileged-but-read-only ops:
+# CAP_DAC_READ_SEARCH for file_read across owners; CAP_NET_RAW left out
+# (net_connect uses pure-Go TCP, ICMP requires CAP_NET_RAW which is
+# opt-in via CapabilityBoundingSet override on the operator side).
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target

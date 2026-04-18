@@ -26,11 +26,27 @@ func (s *Store) AuditLog(ctx context.Context, actor, action string, details map[
 }
 
 func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
+	return s.ListAuditFiltered(ctx, "", "", limit)
+}
+
+// ListAuditFiltered narrows by actor and/or action substring (LIKE).
+func (s *Store) ListAuditFiltered(ctx context.Context, actor, action string, limit int) ([]AuditEntry, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, ts, actor, action, COALESCE(details_json,'') FROM audit ORDER BY id DESC LIMIT ?`, limit)
+	q := `SELECT id, ts, actor, action, COALESCE(details_json,'') FROM audit WHERE 1=1`
+	args := []any{}
+	if actor != "" {
+		q += ` AND actor LIKE ?`
+		args = append(args, "%"+actor+"%")
+	}
+	if action != "" {
+		q += ` AND action LIKE ?`
+		args = append(args, "%"+action+"%")
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

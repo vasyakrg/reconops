@@ -26,14 +26,30 @@ import (
 var tplFS embed.FS
 
 type Server struct {
-	store  *store.Store
-	runner *hubrunner.Runner
-	loop   *investigator.Loop // optional — nil when LLM is not configured
-	tpl    *template.Template
-	log    *slog.Logger
+	store    *store.Store
+	runner   *hubrunner.Runner
+	loop     *investigator.Loop // optional — nil when LLM is not configured
+	tpl      *template.Template
+	log      *slog.Logger
+	auth     authConfig
+	sessions *sessionStore
 }
 
-func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loop, log *slog.Logger) (*Server, error) {
+// AuthConfig is the public knob set by cmd/hub. Username + bcrypt password
+// hash come from env / yaml; SessionTTL defaults to 12h.
+type AuthConfig struct {
+	Username     string
+	PasswordHash string
+	SessionTTL   time.Duration
+}
+
+func (a AuthConfig) Enabled() bool { return a.Username != "" && a.PasswordHash != "" }
+
+// GenPasswordHash exposes the bcrypt helper to cmd/hub.
+func GenPasswordHash(pw string) (string, error) { return PasswordHashFromPlaintext(pw) }
+
+func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loop,
+	auth AuthConfig, log *slog.Logger) (*Server, error) {
 	tpl, err := template.New("").Funcs(template.FuncMap{
 		"prettyJSON": prettyJSON,
 		"truncate":   truncate,
@@ -46,31 +62,47 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
-	return &Server{store: st, runner: runner, loop: loop, tpl: tpl, log: log}, nil
+	if auth.SessionTTL <= 0 {
+		auth.SessionTTL = 12 * time.Hour
+	}
+	return &Server{
+		store: st, runner: runner, loop: loop, tpl: tpl, log: log,
+		auth:     authConfig(auth),
+		sessions: newSessionStore(),
+	}, nil
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleRoot)
+	// Public endpoints (no auth check, no CSRF).
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/hosts", s.handleHosts)
-	mux.HandleFunc("/hosts/", s.handleHostDetail) // /hosts/{id}
-	mux.HandleFunc("/collectors", s.handleCollectorsCatalog)
-	mux.HandleFunc("/runs", s.handleRunsList)
-	mux.HandleFunc("/runs/", s.handleRunsDetail) // /runs/{id} | /runs/{id}/artifact?...
-	mux.HandleFunc("/runs/new", s.handleRunsNew) // POST: launch a run
-	mux.HandleFunc("/investigations", s.handleInvestigationsList)
-	mux.HandleFunc("/investigations/", s.handleInvestigationsDetail)      // /investigations/{id}
-	mux.HandleFunc("/investigations/new", s.handleInvestigationsNew)      // POST: start
-	mux.HandleFunc("/investigations/decide", s.handleInvestigationDecide) // POST: approve/skip/end
-	mux.HandleFunc("/audit", s.handleAudit)
-	mux.HandleFunc("/investigations/hypothesis", s.handleHypothesis)       // POST
-	mux.HandleFunc("/findings/", s.handleFindingAction)                    // POST /findings/{id}/{pin|unpin|ignore|unignore}
-	mux.HandleFunc("/investigations/export/", s.handleInvestigationExport) // GET /investigations/export/{id}
-	mux.HandleFunc("/investigations/events/", s.handleInvestigationSSE)    // GET SSE
+	mux.HandleFunc("/login", s.handleLogin)
+	mux.HandleFunc("/logout", s.handleLogout)
+
+	// Authenticated endpoints. requireAuth is a no-op when auth is not
+	// configured (single-trust loopback mode).
+	auth := s.requireAuth
+	mux.HandleFunc("/", auth(s.handleRoot))
+	mux.HandleFunc("/hosts", auth(s.handleHosts))
+	mux.HandleFunc("/hosts/", auth(s.handleHostDetail))
+	mux.HandleFunc("/collectors", auth(s.handleCollectorsCatalog))
+	mux.HandleFunc("/runs", auth(s.handleRunsList))
+	mux.HandleFunc("/runs/", auth(s.handleRunsDetail))
+	mux.HandleFunc("/runs/new", auth(s.handleRunsNew))
+	mux.HandleFunc("/investigations", auth(s.handleInvestigationsList))
+	mux.HandleFunc("/investigations/", auth(s.handleInvestigationsDetail))
+	mux.HandleFunc("/investigations/new", auth(s.handleInvestigationsNew))
+	mux.HandleFunc("/investigations/decide", auth(s.handleInvestigationDecide))
+	mux.HandleFunc("/investigations/hypothesis", auth(s.handleHypothesis))
+	mux.HandleFunc("/findings/", auth(s.handleFindingAction))
+	mux.HandleFunc("/investigations/export/", auth(s.handleInvestigationExport))
+	mux.HandleFunc("/investigations/events/", auth(s.handleInvestigationSSE))
+	mux.HandleFunc("/audit", auth(s.handleAudit))
+	mux.HandleFunc("/settings", auth(s.handleSettings))
+	mux.HandleFunc("/settings/issue-token", auth(s.handleIssueToken))
 	return mux
 }
 
@@ -87,7 +119,9 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-	s.log.Info("web listening", "addr", addr)
+	go s.runSessionGC(ctx)
+
+	s.log.Info("web listening", "addr", addr, "auth", s.auth.Enabled())
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -108,7 +142,7 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "hosts", map[string]any{
+	s.renderForReq(w, r, "hosts", map[string]any{
 		"Title":        "Hosts",
 		"Version":      version.Version,
 		"ContentBlock": "hosts",
@@ -128,7 +162,7 @@ func (s *Server) handleHostDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mans, _ := s.store.ListCollectorManifests(r.Context(), id)
-	s.render(w, "host_detail", map[string]any{
+	s.renderForReq(w, r, "host_detail", map[string]any{
 		"Title":        "Host " + id,
 		"Version":      version.Version,
 		"ContentBlock": "host_detail",
@@ -161,7 +195,7 @@ func (s *Server) handleCollectorsCatalog(w http.ResponseWriter, r *http.Request)
 	for _, e := range byName {
 		entries = append(entries, e)
 	}
-	s.render(w, "collectors", map[string]any{
+	s.renderForReq(w, r, "collectors", map[string]any{
 		"Title":        "Collectors",
 		"Version":      version.Version,
 		"ContentBlock": "collectors",
@@ -175,7 +209,7 @@ func (s *Server) handleRunsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "runs_list", map[string]any{
+	s.renderForReq(w, r, "runs_list", map[string]any{
 		"Title":        "Runs",
 		"Version":      version.Version,
 		"ContentBlock": "runs_list",
@@ -213,7 +247,7 @@ func (s *Server) handleRunsDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, v)
 	}
-	s.render(w, "run_detail", map[string]any{
+	s.renderForReq(w, r, "run_detail", map[string]any{
 		"Title":        "Run " + runID,
 		"Version":      version.Version,
 		"ContentBlock": "run_detail",
@@ -274,12 +308,67 @@ func (s *Server) handleRunsNew(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/runs/"+runID, http.StatusSeeOther)
 }
 
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	hosts, _ := s.store.ListHosts(r.Context())
+	s.renderForReq(w, r, "settings", map[string]any{
+		"Title":   "Settings",
+		"Version": version.Version,
+		"Hosts":   hosts,
+		"Issued":  r.URL.Query().Get("issued"),
+	})
+}
+
+func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	agentID := strings.TrimSpace(r.FormValue("agent_id"))
+	ttlS := r.FormValue("ttl")
+	if agentID == "" {
+		http.Error(w, "agent_id required", http.StatusBadRequest)
+		return
+	}
+	ttl := 24 * time.Hour
+	if ttlS != "" {
+		if d, err := time.ParseDuration(ttlS); err == nil && d > 0 && d <= 30*24*time.Hour {
+			ttl = d
+		}
+	}
+	tok, err := investigatorTokenFor(r.Context(), s, agentID, ttl, authedUser(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r.Context(), authedUser(r), "token.issue",
+		map[string]any{"agent_id": agentID, "ttl": ttl.String()})
+	http.Redirect(w, r, "/settings?issued="+tok, http.StatusSeeOther)
+}
+
 // audit writes an audit row, escalating any failure to ERROR-level slog —
 // audit is the one table where silent loss is unacceptable (review H2).
 func (s *Server) audit(ctx context.Context, actor, action string, details map[string]any) {
 	if err := s.store.AuditLog(ctx, actor, action, details); err != nil {
 		s.log.Error("audit write failed", "actor", actor, "action", action, "err", err)
 	}
+}
+
+// renderForReq variant that injects the per-session CSRF token into the
+// data map so templates can embed `<input name="csrf">`. Used by all
+// authenticated GET handlers that render forms.
+func (s *Server) renderForReq(w http.ResponseWriter, r *http.Request, page string, data map[string]any) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["CSRF"] = s.csrfTokenFor(r)
+	data["AuthEnabled"] = s.auth.Enabled()
+	data["Username"] = authedUser(r)
+	s.render(w, page, data)
 }
 
 // render executes layout.html, dynamically aliasing the "content" block to
@@ -334,7 +423,7 @@ func (s *Server) handleInvestigationsList(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "investigations_list", map[string]any{
+	s.renderForReq(w, r, "investigations_list", map[string]any{
 		"Title":      "Investigations",
 		"Version":    version.Version,
 		"Items":      invs,
@@ -387,7 +476,15 @@ func (s *Server) handleInvestigationsDetail(w http.ResponseWriter, r *http.Reque
 	findings, _ := s.store.ListFindings(r.Context(), id)
 	pending, _ := s.store.PendingToolCall(r.Context(), id)
 
-	s.render(w, "investigation_detail", map[string]any{
+	maxSteps, maxTokens := s.budgets()
+	usedTokens := inv.TotalPromptTokens + inv.TotalCompletionTokens
+	stepsPct := safePct(inv.TotalToolCalls, maxSteps)
+	tokensPct := safePct(usedTokens, maxTokens)
+	// (review M5) Inject the current snapshot so the SSE script has a
+	// known baseline and reloads on any difference from the very first
+	// state-change event — closes the render-vs-first-event race.
+	initSnap, _ := s.snapshotForSSE(r.Context(), id)
+	s.renderForReq(w, r, "investigation_detail", map[string]any{
 		"Title":      "Investigation " + id,
 		"Version":    version.Version,
 		"Inv":        inv,
@@ -395,7 +492,40 @@ func (s *Server) handleInvestigationsDetail(w http.ResponseWriter, r *http.Reque
 		"Findings":   findings,
 		"Pending":    pending,
 		"LLMEnabled": s.loop != nil,
+		"MaxSteps":   maxSteps,
+		"MaxTokens":  maxTokens,
+		"UsedTokens": usedTokens,
+		"StepsPct":   stepsPct,
+		"TokensPct":  tokensPct,
+		"InitSnap":   initSnap,
 	})
+}
+
+// budgets returns the configured per-investigation budgets so the UI can
+// render a usage bar. When the loop is not configured we fall back to plan
+// defaults.
+func (s *Server) budgets() (steps, tokens int) {
+	if s.loop != nil {
+		steps, tokens = s.loop.Budgets()
+	}
+	if steps == 0 {
+		steps = 40
+	}
+	if tokens == 0 {
+		tokens = 500_000
+	}
+	return
+}
+
+func safePct(used, max int) int {
+	if max <= 0 {
+		return 0
+	}
+	p := used * 100 / max
+	if p > 100 {
+		p = 100
+	}
+	return p
 }
 
 func (s *Server) handleInvestigationDecide(w http.ResponseWriter, r *http.Request) {
@@ -560,15 +690,17 @@ func (s *Server) handleInvestigationExport(w http.ResponseWriter, r *http.Reques
 		if tc.Rationale != "" {
 			_, _ = fmt.Fprintf(w, "> %s\n\n", tc.Rationale)
 		}
-		_, _ = fmt.Fprintf(w, "**Input:**\n```json\n%s\n```\n", prettyJSON([]byte(tc.InputJSON)))
+		// (review M9) Use 4-tilde fences instead of triple-backtick so JSON
+		// content containing literal ``` doesn't break the rendered .md.
+		_, _ = fmt.Fprintf(w, "**Input:**\n~~~~json\n%s\n~~~~\n", prettyJSON([]byte(tc.InputJSON)))
 		if tc.ResultJSON.Valid && tc.ResultJSON.String != "" {
-			_, _ = fmt.Fprintf(w, "**Result:**\n```json\n%s\n```\n", prettyJSON([]byte(tc.ResultJSON.String)))
+			_, _ = fmt.Fprintf(w, "**Result:**\n~~~~json\n%s\n~~~~\n", prettyJSON([]byte(tc.ResultJSON.String)))
 		}
 		_, _ = fmt.Fprintln(w)
 	}
 
 	if inv.SummaryJSON.Valid {
-		_, _ = fmt.Fprintf(w, "## Summary\n\n```json\n%s\n```\n", prettyJSON([]byte(inv.SummaryJSON.String)))
+		_, _ = fmt.Fprintf(w, "## Summary\n\n~~~~json\n%s\n~~~~\n", prettyJSON([]byte(inv.SummaryJSON.String)))
 	}
 }
 
@@ -623,33 +755,31 @@ func (s *Server) handleInvestigationSSE(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// snapshotForSSE returns a small JSON-ish digest used to detect whether the
-// page should self-refresh: status, total_tool_calls, latest tool_call status,
-// findings count.
+// snapshotForSSE returns a small JSON digest used to detect whether the
+// page should self-refresh: status, tool_call count, latest tool_call
+// status, findings count. Single SQL query (review M8).
 func (s *Server) snapshotForSSE(ctx context.Context, id string) (string, error) {
-	inv, err := s.store.GetInvestigation(ctx, id)
+	status, last, steps, findings, err := s.store.SnapshotCounters(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	tcs, _ := s.store.ListToolCalls(ctx, id)
-	findings, _ := s.store.ListFindings(ctx, id)
-	lastStatus := ""
-	if len(tcs) > 0 {
-		lastStatus = tcs[len(tcs)-1].Status
-	}
 	return fmt.Sprintf(`{"status":%q,"steps":%d,"last":%q,"findings":%d}`,
-		inv.Status, inv.TotalToolCalls, lastStatus, len(findings)), nil
+		status, steps, last, findings), nil
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	entries, err := s.store.ListAudit(r.Context(), 200)
+	actor := r.URL.Query().Get("actor")
+	action := r.URL.Query().Get("action")
+	entries, err := s.store.ListAuditFiltered(r.Context(), actor, action, 500)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, "audit", map[string]any{
+	s.renderForReq(w, r, "audit", map[string]any{
 		"Title":   "Audit",
 		"Version": version.Version,
 		"Entries": entries,
+		"Actor":   actor,
+		"Action":  action,
 	})
 }

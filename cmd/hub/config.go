@@ -14,6 +14,7 @@ type Config struct {
 	Storage StorageConfig `yaml:"storage"`
 	Auth    AuthConfig    `yaml:"auth"`
 	LLM     LLMConfig     `yaml:"llm"`
+	Runner  RunnerConfig  `yaml:"runner"`
 }
 
 // LLMConfig drives the investigator's Claude / OpenAI-compatible client.
@@ -42,6 +43,10 @@ type StorageConfig struct {
 	ArtifactDir   string `yaml:"artifact_dir"`
 	CADir         string `yaml:"ca_dir"`
 	RetentionDays int    `yaml:"retention_days"`
+}
+
+type RunnerConfig struct {
+	PerAgentRPM int `yaml:"per_agent_rpm"` // collects/min cap; 0 = default 30
 }
 
 type AuthConfig struct {

@@ -19,6 +19,7 @@
       <td>{{.Version}}</td>
       <td>
         <form class="inline" action="/runs/new" method="post">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
           <input type="hidden" name="host_id" value="{{$.Host.ID}}">
           <input type="hidden" name="collector" value="{{.Name}}">
           <input type="hidden" name="name" value="manual: {{.Name}} on {{$.Host.ID}}">

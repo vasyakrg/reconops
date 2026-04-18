@@ -30,6 +30,7 @@ type Runner struct {
 	disp        Dispatcher
 	artifactDir string
 	log         *slog.Logger
+	limiter     *rateLimiter
 
 	mu       sync.RWMutex
 	pending  map[string]*pendingTask // request_id -> task
@@ -53,13 +54,16 @@ type openArtifact struct {
 }
 
 // New creates a Runner. The artifactDir is the per-task root; results are
-// stored under {artifactDir}/{task_id}/{name}.
-func New(st *store.Store, disp Dispatcher, artifactDir string, log *slog.Logger) *Runner {
+// stored under {artifactDir}/{task_id}/{name}. perAgentRPM caps how many
+// CollectRequest are dispatched to one agent per minute (PROJECT.md §7.6;
+// 30 default; 0 disables).
+func New(st *store.Store, disp Dispatcher, artifactDir string, perAgentRPM int, log *slog.Logger) *Runner {
 	return &Runner{
 		store:       st,
 		disp:        disp,
 		artifactDir: artifactDir,
 		log:         log,
+		limiter:     newRateLimiter(perAgentRPM),
 		pending:     map[string]*pendingTask{},
 		openArts:    map[string]*openArtifact{},
 	}
@@ -119,6 +123,10 @@ func (r *Runner) CreateRun(ctx context.Context, req RunRequest) (string, error) 
 
 		if !r.disp.IsOnline(hostID) {
 			_ = r.store.FinishTask(ctx, taskID, "undeliverable", 0, "agent offline")
+			continue
+		}
+		if !r.limiter.allow(hostID) {
+			_ = r.store.FinishTask(ctx, taskID, "undeliverable", 0, "rate limited (per-agent rpm cap)")
 			continue
 		}
 

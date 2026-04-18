@@ -11,12 +11,23 @@
 <h3>Goal</h3>
 <blockquote>{{.Inv.Goal}}</blockquote>
 
+<h3>Budgets</h3>
+<div class="small">
+  <div>Steps: {{.Inv.TotalToolCalls}} / {{.MaxSteps}} —
+    <progress value="{{.StepsPct}}" max="100" style="width:200px"></progress> {{.StepsPct}}%
+  </div>
+  <div>Tokens: {{.UsedTokens}} / {{.MaxTokens}} —
+    <progress value="{{.TokensPct}}" max="100" style="width:200px"></progress> {{.TokensPct}}%
+  </div>
+</div>
+
 {{if .Pending}}
 <h3>Pending tool call — your decision</h3>
 <div style="border:1px solid #ddd; padding:8px; background:#fffceb;">
   <p><strong>Tool:</strong> <code>{{.Pending.Tool}}</code></p>
   {{if .Pending.Rationale}}<p><em>{{.Pending.Rationale}}</em></p>{{end}}
   <form method="post" action="/investigations/decide">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
     <details open><summary>Input (edit JSON below to change params)</summary>
       <textarea name="new_input_json" rows="6" cols="80" style="font-family:monospace;">{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</textarea>
@@ -37,6 +48,7 @@
 <details>
   <summary>Inject operator hypothesis (overrides model's next step)</summary>
   <form method="post" action="/investigations/hypothesis" style="margin-top:6px;">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
     <label class="small">Claim (required):</label><br>
     <textarea name="claim" rows="2" cols="80" required placeholder="possibly the kube-apiserver cert is expired"></textarea><br>
@@ -63,9 +75,11 @@
       <td><details><summary>refs</summary><pre>{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre></details></td>
       <td class="small">
         <form class="inline" method="post" action="/findings/{{.ID}}/{{if .Pinned}}unpin{{else}}pin{{end}}">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
           <button type="submit">{{if .Pinned}}unpin{{else}}pin{{end}}</button>
         </form>
         <form class="inline" method="post" action="/findings/{{.ID}}/{{if .Ignored}}unignore{{else}}ignore{{end}}">
+          <input type="hidden" name="csrf" value="{{$.CSRF}}">
           <button type="submit">{{if .Ignored}}restore{{else}}ignore{{end}}</button>
         </form>
       </td>
@@ -117,10 +131,12 @@
 <script>
 (function() {
   const es = new EventSource("/investigations/events/{{.Inv.ID}}");
-  let last = null;
+  // Baseline computed server-side at render time — closes the race where
+  // the page is rendered AFTER the first state-change but BEFORE the SSE
+  // connection is established.
+  const baseline = {{.InitSnap | printf "%q"}};
   es.addEventListener("state-change", (e) => {
-    if (last === null) { last = e.data; return; }
-    if (last !== e.data) { es.close(); window.location.reload(); }
+    if (e.data !== baseline) { es.close(); window.location.reload(); }
   });
   es.addEventListener("bye", () => es.close());
 })();

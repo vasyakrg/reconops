@@ -1,0 +1,32 @@
+{{define "settings"}}
+<h2>Settings</h2>
+
+<h3>Issue bootstrap token</h3>
+<p class="small">Tokens are bound to one agent_id (security — see PROJECT.md §9.2 / review C2).</p>
+<form method="post" action="/settings/issue-token">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <p>
+    <label>agent_id: <input type="text" name="agent_id" required></label>
+    <label>TTL: <input type="text" name="ttl" value="24h" size="6"></label>
+    <button type="submit">Issue</button>
+  </p>
+</form>
+
+{{if .Issued}}
+<div style="border:1px solid #1a7f37; background:#d6f5d6; padding:8px; margin:1em 0;">
+  <p><strong>Issued (copy now — shown once):</strong></p>
+  <pre>{{.Issued}}</pre>
+</div>
+{{end}}
+
+<h3>Enrolled hosts</h3>
+{{if .Hosts}}
+<ul>
+  {{range .Hosts}}
+    <li><a href="/hosts/{{.ID}}">{{.ID}}</a> — <span class="status-{{.Status}}">{{.Status}}</span></li>
+  {{end}}
+</ul>
+{{else}}
+<p class="empty">No hosts enrolled yet.</p>
+{{end}}
+{{end}}

@@ -1,0 +1,9 @@
+{{define "login"}}
+<h2>Login</h2>
+<form method="post" action="/login">
+  <input type="hidden" name="next" value="{{.Next}}">
+  <p><label>Username: <input type="text" name="username" autofocus required></label></p>
+  <p><label>Password: <input type="password" name="password" required></label></p>
+  <p><button type="submit">Sign in</button></p>
+</form>
+{{end}}

@@ -39,6 +39,8 @@
     <a href="/runs">Runs</a>
     <a href="/investigations">Investigations</a>
     <a href="/audit">Audit</a>
+    <a href="/settings">Settings</a>
+    {{if .AuthEnabled}}<span class="small" style="float:right">{{.Username}} · <a href="/logout">logout</a></span>{{end}}
   </nav>
   {{template "content" .}}
 </body>

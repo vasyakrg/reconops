@@ -48,6 +48,15 @@ func NewLoop(st *store.Store, llmC *llm.Client, run *runner.Runner,
 	}
 }
 
+// Budgets returns the configured (max_steps, max_tokens) so the UI can
+// render usage bars without re-reading hub.yaml.
+func (l *Loop) Budgets() (int, int) {
+	if l == nil {
+		return 0, 0
+	}
+	return l.maxSteps, l.maxTokens
+}
+
 // Start creates a new investigation row, persists the system prompt + user
 // goal as the first two messages, and triggers the first LLM call.
 func (l *Loop) Start(ctx context.Context, goal, createdBy string) (string, error) {
@@ -211,7 +220,9 @@ func (l *Loop) DecideWithEdit(ctx context.Context, investigationID, decision, ne
 // PROJECT.md §7.5: hypothesis is a directive, not a hint, and must
 // REPLACE the model's current plan.
 func (l *Loop) InjectHypothesis(ctx context.Context, investigationID, claim, expected, instruction, decidedBy string) error {
-	claim = strings.TrimSpace(claim)
+	claim = capLines(strings.TrimSpace(claim), 4096)
+	expected = capLines(strings.TrimSpace(expected), 2048)
+	instruction = capLines(strings.TrimSpace(instruction), 2048)
 	if claim == "" {
 		return errors.New("claim required")
 	}
@@ -232,6 +243,10 @@ func (l *Loop) InjectHypothesis(ctx context.Context, investigationID, claim, exp
 			`{"ok":false,"error":"superseded by operator hypothesis"}`); err != nil {
 			return fmt.Errorf("discard pending: %w", err)
 		}
+		// (review M7) Audit the loop-side discard so post-mortem can see
+		// exactly which model proposal was overridden.
+		_ = l.store.AuditLog(ctx, decidedBy, "investigator.discard_pending",
+			map[string]any{"investigation_id": investigationID, "tool_call_id": pending.ID, "tool": pending.Tool})
 	}
 	body := "OPERATOR HYPOTHESIS [priority: HIGH]\nClaim: " + claim
 	if expected = strings.TrimSpace(expected); expected != "" {
@@ -249,7 +264,113 @@ func (l *Loop) InjectHypothesis(ctx context.Context, investigationID, claim, exp
 	return nil
 }
 
-// InjectRestoreNote rebuts a previous IGNORED directive (review M4).
+// compact folds the older slice of an investigation's conversation into a
+// single system_summary message. Strategy:
+//  1. Take all non-archived messages.
+//  2. Keep system + first user(goal) verbatim.
+//  3. Keep the last compactionKeepRecent messages verbatim.
+//  4. Send everything else to the LLM with a "summarize this state for the
+//     next turn" prompt; persist the response as a new system_summary.
+//  5. Mark the originals archived (excluding system + first user, which
+//     stay live).
+func (l *Loop) compact(ctx context.Context, investigationID string) error {
+	msgs, err := l.store.ListMessages(ctx, investigationID, false)
+	if err != nil {
+		return err
+	}
+	if len(msgs) < compactionKeepRecent+4 {
+		return nil // nothing useful to compact
+	}
+
+	// Preserve system+goal (first 2) and the tail. The tail is implicit:
+	// since we only archive `middle`, anything after stays live.
+	preserve := msgs[:2]
+	middle := msgs[2 : len(msgs)-compactionKeepRecent]
+	if len(middle) == 0 {
+		return nil
+	}
+
+	prompt := []llm.Message{
+		{Role: "system", Content: compactionPrompt},
+	}
+	for _, m := range preserve {
+		prompt = appendForLLM(prompt, m)
+	}
+	for _, m := range middle {
+		prompt = appendForLLM(prompt, m)
+	}
+	prompt = append(prompt, llm.Message{
+		Role:    "user",
+		Content: "Produce the COMPACT_STATE block now. No tool calls.",
+	})
+
+	resp, err := l.llm.Chat(ctx, llm.ChatRequest{
+		Messages:    prompt,
+		Temperature: 0,
+		MaxTokens:   2048,
+	})
+	if err != nil {
+		return fmt.Errorf("compaction llm: %w", err)
+	}
+	_ = l.store.AccumulateTokens(ctx, investigationID, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	summary := resp.Choices[0].Message.Content
+	if strings.TrimSpace(summary) == "" {
+		return errors.New("compaction returned empty summary")
+	}
+
+	// Append summary BEFORE archiving so that ListMessages always returns
+	// at least one message in the gap.
+	if _, err := l.store.AppendMessage(ctx, store.Message{
+		InvestigationID: investigationID, Role: "system_summary",
+		Content: "COMPACT_STATE:\n" + summary,
+	}); err != nil {
+		return err
+	}
+
+	// Archive everything we just folded — keep system+goal (seq 1,2) and
+	// the tail (seq > middle's last seq).
+	upTo := middle[len(middle)-1].Seq
+	if err := l.store.MarkMessagesArchived(ctx, investigationID, upTo); err != nil {
+		return fmt.Errorf("archive: %w", err)
+	}
+	// But we must NOT archive seq=1 (system) or seq=2 (user goal).
+	// Re-mark them as not archived. Cheap and idempotent.
+	if err := l.unarchiveSeqs(ctx, investigationID, []int{preserve[0].Seq, preserve[1].Seq}); err != nil {
+		l.log.Warn("unarchive preserve", "err", err)
+	}
+	l.log.Info("compaction complete", "investigation_id", investigationID,
+		"archived_through_seq", upTo, "summary_chars", len(summary))
+	return nil
+}
+
+func (l *Loop) unarchiveSeqs(ctx context.Context, investigationID string, seqs []int) error {
+	for _, s := range seqs {
+		if _, err := l.store.DB().ExecContext(ctx,
+			`UPDATE messages SET archived=0 WHERE investigation_id=? AND seq=?`,
+			investigationID, s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const compactionPrompt = `# Compaction task
+
+You are summarizing an in-progress investigation so the conversation can
+continue without exceeding the context window. Produce a single COMPACT_STATE
+block (plain text, no fences) that the next-turn assistant can read instead
+of the older messages. Cover, in order:
+
+- Goal recap (one line, restate the user goal).
+- Hypotheses tried and ruled out (with the task_ids that ruled them out).
+- Hypotheses still open.
+- Key evidence: per host_id, the relevant findings (status, code, message,
+  task_id refs).
+- Outstanding questions for the operator (if any).
+
+Do NOT call any tools. Output only the COMPACT_STATE prose.
+`
+
 // Without it, the older "do not investigate" message stays in context and
 // the model will keep avoiding the branch the operator just unblocked.
 func (l *Loop) InjectRestoreNote(ctx context.Context, investigationID, findingCode, findingMessage string) error {
@@ -369,32 +490,25 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 	}
 	pbMsgs := make([]llm.Message, 0, len(msgs))
 	for _, m := range msgs {
-		switch m.Role {
-		case "system", "user":
-			pbMsgs = append(pbMsgs, llm.Message{Role: m.Role, Content: m.Content})
-		case "assistant":
-			// (C1) Reconstruct assistant message with the SAME tool_calls
-			// the LLM emitted, otherwise the next-turn 'tool' message has
-			// no preceding assistant tool_call to anchor on, and the
-			// provider rejects the conversation with "tool_call_id not
-			// found".
-			am := llm.Message{Role: "assistant", Content: m.Content}
-			if m.ToolCallsJSON.Valid && m.ToolCallsJSON.String != "" {
-				var tcs []llm.ToolCall
-				if err := json.Unmarshal([]byte(m.ToolCallsJSON.String), &tcs); err == nil {
-					am.ToolCalls = tcs
-				}
-			}
-			pbMsgs = append(pbMsgs, am)
-		case "system_note":
-			// Encoded as a user message with a SYSTEM NOTE prefix.
-			pbMsgs = append(pbMsgs, llm.Message{Role: "user", Content: "SYSTEM NOTE: " + m.Content})
-		case "tool":
-			tcID := ""
-			if m.ToolCallID.Valid {
-				tcID = m.ToolCallID.String
-			}
-			pbMsgs = append(pbMsgs, llm.Message{Role: "tool", Content: m.Content, ToolCallID: tcID})
+		pbMsgs = appendForLLM(pbMsgs, m)
+	}
+
+	// (week 5 §4.5) Compaction trigger — when context approaches the
+	// vendor's window, fold the older slice of the conversation into a
+	// single system_summary message and mark the originals archived. The
+	// next callLLM sees only summary + recent slice.
+	if shouldCompact(pbMsgs) {
+		if err := l.compact(ctx, inv.ID); err != nil {
+			l.log.Warn("compaction failed", "investigation_id", inv.ID, "err", err)
+		}
+		// Re-read after compaction.
+		msgs, err = l.store.ListMessages(ctx, inv.ID, false)
+		if err != nil {
+			return false, err
+		}
+		pbMsgs = pbMsgs[:0]
+		for _, m := range msgs {
+			pbMsgs = appendForLLM(pbMsgs, m)
 		}
 	}
 
@@ -632,6 +746,56 @@ func nextSeq(ctx context.Context, st *store.Store, investigationID string) int {
 
 const broadSelectorThreshold = 5
 
+// approxTokens is a coarse byte→token estimate. 4 bytes ≈ 1 token in
+// practice for English/JSON; close enough for compaction-trigger heuristics.
+const approxBytesPerToken = 4
+const compactionTriggerTokens = 150_000
+const compactionKeepRecent = 8 // last N messages stay verbatim
+
+// shouldCompact returns true when the rough byte count of pbMsgs exceeds
+// compactionTriggerTokens × approxBytesPerToken. Cheap O(N).
+func shouldCompact(pbMsgs []llm.Message) bool {
+	bytes := 0
+	for _, m := range pbMsgs {
+		bytes += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			bytes += len(tc.Function.Arguments) + len(tc.Function.Name)
+		}
+	}
+	return bytes > compactionTriggerTokens*approxBytesPerToken
+}
+
+// appendForLLM converts one stored Message into the on-wire llm.Message,
+// shared between callLLM and compaction's re-fetch.
+func appendForLLM(out []llm.Message, m store.Message) []llm.Message {
+	switch m.Role {
+	case "system", "user", "system_summary":
+		role := m.Role
+		if role == "system_summary" {
+			role = "system"
+		}
+		out = append(out, llm.Message{Role: role, Content: m.Content})
+	case "assistant":
+		am := llm.Message{Role: "assistant", Content: m.Content}
+		if m.ToolCallsJSON.Valid && m.ToolCallsJSON.String != "" {
+			var tcs []llm.ToolCall
+			if err := json.Unmarshal([]byte(m.ToolCallsJSON.String), &tcs); err == nil {
+				am.ToolCalls = tcs
+			}
+		}
+		out = append(out, am)
+	case "system_note":
+		out = append(out, llm.Message{Role: "user", Content: "SYSTEM NOTE: " + m.Content})
+	case "tool":
+		tcID := ""
+		if m.ToolCallID.Valid {
+			tcID = m.ToolCallID.String
+		}
+		out = append(out, llm.Message{Role: "tool", Content: m.Content, ToolCallID: tcID})
+	}
+	return out
+}
+
 // needsBroadConfirm returns true when a collect_batch call hits more hosts
 // than broadSelectorThreshold AND the typed flag has not yet been set by
 // the operator's second approve. Flag is in tool_calls.broad_confirmed
@@ -651,6 +815,27 @@ func needsBroadConfirm(tc *store.ToolCallRow) bool {
 		return false
 	}
 	return len(args.HostIDs) > broadSelectorThreshold
+}
+
+// capLines truncates input to maxBytes and strips lines that look like
+// prompt-role markers ("System:", "Assistant:") to make operator-supplied
+// text harder to abuse for prompt injection (review M6).
+func capLines(s string, maxBytes int) string {
+	if len(s) > maxBytes {
+		s = s[:maxBytes] + "…(truncated)"
+	}
+	out := make([]string, 0, 8)
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		lower := strings.ToLower(t)
+		if strings.HasPrefix(lower, "system:") ||
+			strings.HasPrefix(lower, "assistant:") ||
+			strings.HasPrefix(lower, "tool:") {
+			line = "[stripped role-label] " + line
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func newInvestigationID() string {

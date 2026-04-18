@@ -18,6 +18,7 @@ import (
 	"github.com/vasyakrg/recon/internal/hub/auth"
 	"github.com/vasyakrg/recon/internal/hub/investigator"
 	"github.com/vasyakrg/recon/internal/hub/llm"
+	"github.com/vasyakrg/recon/internal/hub/retention"
 	hubrunner "github.com/vasyakrg/recon/internal/hub/runner"
 	"github.com/vasyakrg/recon/internal/hub/store"
 	"github.com/vasyakrg/recon/internal/hub/web"
@@ -25,7 +26,7 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "/etc/recon/hub.yaml", "path to hub config")
-	mode := flag.String("mode", "serve", "serve | gen-token | revoke")
+	mode := flag.String("mode", "serve", "serve | gen-token | revoke | gen-password-hash")
 	tokenTTL := flag.Duration("token-ttl", 24*time.Hour, "TTL for gen-token mode")
 	tokenIssuer := flag.String("token-issued-by", "admin", "actor recorded for issued token")
 	agentID := flag.String("agent-id", "", "target agent_id (required for gen-token / revoke)")
@@ -34,6 +35,23 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	log.Info("recon-hub starting", "version", version.Full(), "mode", *mode, "config", *cfgPath)
+
+	// gen-password-hash is a pure helper — runs before config / store / PKI
+	// so the operator can produce a hash on a freshly installed binary.
+	if *mode == "gen-password-hash" {
+		pw := os.Getenv("RECON_ADMIN_PASSWORD")
+		if pw == "" {
+			fmt.Fprintln(os.Stderr, "set RECON_ADMIN_PASSWORD before invoking gen-password-hash")
+			os.Exit(2)
+		}
+		h, err := web.GenPasswordHash(pw)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		fmt.Println(h)
+		return
+	}
 
 	cfg, err := LoadConfig(*cfgPath)
 	if err != nil {
@@ -106,7 +124,11 @@ func main() {
 	}
 
 	apiSrv := api.NewServer(st, pki, log.With("comp", "grpc"))
-	hr := hubrunner.New(st, apiSrv, cfg.Storage.ArtifactDir, log.With("comp", "runner"))
+	hr := hubrunner.New(st, apiSrv, cfg.Storage.ArtifactDir, cfg.Runner.PerAgentRPM, log.With("comp", "runner"))
+
+	// Retention worker: housekeeping artifacts + archived messages.
+	rw := retention.New(st, cfg.Storage.ArtifactDir, cfg.Storage.RetentionDays, time.Hour, log.With("comp", "retention"))
+	go rw.Run(rootCtx)
 	apiSrv.SetSink(hr)
 
 	// LLM client is optional — if no API key is configured, the
@@ -146,7 +168,19 @@ func main() {
 		gsrv.GracefulStop()
 	}()
 
-	webSrv, err := web.NewServer(st, hr, loop, log.With("comp", "web"))
+	auth := web.AuthConfig{
+		Username:     envOr("RECON_ADMIN_USER", ""),
+		PasswordHash: envOr("RECON_ADMIN_PASSWORD_HASH", ""),
+	}
+	if auth.Username != "" && auth.PasswordHash == "" {
+		log.Error("RECON_ADMIN_USER set but RECON_ADMIN_PASSWORD_HASH missing — refusing to start")
+		os.Exit(2)
+	}
+	if !auth.Enabled() {
+		log.Warn("hub is running WITHOUT auth — bind to loopback only and reverse-proxy with auth before exposing")
+	}
+
+	webSrv, err := web.NewServer(st, hr, loop, auth, log.With("comp", "web"))
 	if err != nil {
 		log.Error("web init", "err", err)
 		os.Exit(2)
