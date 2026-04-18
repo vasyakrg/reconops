@@ -157,6 +157,11 @@ if systemctl is-active --quiet "${SVC_NAME}"; then
   log "ok — ${SVC_NAME} is running"
   log "follow: journalctl -u ${SVC_NAME} -f"
 else
-  log "service not active — see logs above"
+  log "service not active — systemctl status:"
+  systemctl status "${SVC_NAME}" --no-pager -l || true
+  log "manual binary check (bypasses systemd sandbox):"
+  sudo -u recon "${PREFIX}/recon-agent" --config "$CONF" 2>&1 | head -20 &
+  sleep 3
+  pkill -f "${PREFIX}/recon-agent" 2>/dev/null || true
   exit 1
 fi
