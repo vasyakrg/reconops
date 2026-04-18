@@ -115,6 +115,12 @@ func (s *Server) handleQuickInstall(w http.ResponseWriter, r *http.Request) {
 			ttl = d
 		}
 	}
+	// Quick install for an agent_id we've seen before is the operator's
+	// "wipe and reinstall this host" lever. Revoke the prior identity so
+	// the install script's fresh enroll attempt isn't refused with
+	// AlreadyExists. Idempotent: no-op when the agent_id is brand new.
+	_ = s.store.RevokeIdentity(r.Context(), agentID, "quick-install reissue")
+
 	tok, err := investigatorTokenFor(r.Context(), s, agentID, ttl, authedUser(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
