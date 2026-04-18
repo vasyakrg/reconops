@@ -41,18 +41,35 @@ type Server struct {
 }
 
 // InstallConfig surfaces the hub's "Quick install" knobs to the web layer:
-// where the install script downloads the agent tarball from, and what
-// host:port the agent should configure as its hub endpoint. Both must be set
-// for the /hosts "Quick install" form to render — otherwise it's hidden.
+// the GitHub repo whose releases ship the agent tarball, the host:port the
+// agent should configure as its hub endpoint, and which release version to
+// install ("latest" or a tag like "0.1.0"). RepoURL + Endpoint must both be
+// set for the /hosts "Quick install" form to render.
 type InstallConfig struct {
-	DownloadBaseURL   string
+	ReleaseRepoURL    string
 	AgentGRPCEndpoint string
 	Version           string
 }
 
 // Enabled returns true when the operator filled in the install knobs.
 func (i InstallConfig) Enabled() bool {
-	return i.DownloadBaseURL != "" && i.AgentGRPCEndpoint != ""
+	return i.ReleaseRepoURL != "" && i.AgentGRPCEndpoint != ""
+}
+
+// DownloadBase returns the directory the install script wgets the tarball
+// from, branching on Version. "latest" (or empty) → /releases/latest/download;
+// otherwise → /releases/download/v<version>. The leading "v" is added when
+// missing so operators can write either "0.1.0" or "v0.1.0" in config.
+func (i InstallConfig) DownloadBase() string {
+	repo := strings.TrimRight(i.ReleaseRepoURL, "/")
+	v := i.Version
+	if v == "" || v == "latest" {
+		return repo + "/releases/latest/download"
+	}
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	return repo + "/releases/download/" + v
 }
 
 // AuthConfig is the public knob set by cmd/hub. Username + bcrypt password

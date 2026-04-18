@@ -22,17 +22,19 @@ type Config struct {
 // Both fields are deployment-specific and have no safe defaults — the operator
 // must supply them before issuing install URLs.
 type InstallConfig struct {
-	// DownloadBaseURL is the directory the install script wgets the agent
-	// tarball from. Typically a GitHub Releases asset directory:
-	//   https://github.com/vasyakrg/recon/releases/download/v0.1.0
-	DownloadBaseURL string `yaml:"download_base_url"`
+	// ReleaseRepoURL is the GitHub repo whose releases ship the agent
+	// tarball, e.g. "https://github.com/vasyakrg/reconops". The hub
+	// composes the actual download URL based on Version:
+	//   latest   → <repo>/releases/latest/download/recon-agent-linux-<arch>.tar.gz
+	//   v0.1.0   → <repo>/releases/download/v0.1.0/recon-agent-linux-<arch>.tar.gz
+	ReleaseRepoURL string `yaml:"release_repo_url"`
 	// AgentGRPCEndpoint is host:port the agent should configure as its
 	// hub.endpoint. Different from the operator UI URL — the hub gRPC port
 	// (9443 by default) is what agents talk to over mTLS.
 	AgentGRPCEndpoint string `yaml:"agent_grpc_endpoint"`
-	// Version is the release tag the install script downloads from
-	// DownloadBaseURL. Falls back to "latest" if unset, but operators are
-	// strongly encouraged to pin.
+	// Version selects which release the install script pulls from. Defaults
+	// to "latest" so operators get the most recent published release;
+	// override to a tag (e.g. "0.1.0") to pin a specific build.
 	Version string `yaml:"version"`
 }
 
@@ -122,8 +124,8 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.Install.Version == "" {
 		cfg.Install.Version = envOr("RECON_INSTALL_VERSION", "latest")
 	}
-	if cfg.Install.DownloadBaseURL == "" {
-		cfg.Install.DownloadBaseURL = envOr("RECON_INSTALL_DOWNLOAD_BASE", "")
+	if cfg.Install.ReleaseRepoURL == "" {
+		cfg.Install.ReleaseRepoURL = envOr("RECON_INSTALL_RELEASE_REPO", "")
 	}
 	if cfg.Install.AgentGRPCEndpoint == "" {
 		cfg.Install.AgentGRPCEndpoint = envOr("RECON_INSTALL_GRPC_ENDPOINT", "")

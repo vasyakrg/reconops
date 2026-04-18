@@ -70,20 +70,26 @@ DIST_DIR := dist
 DIST_VER := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: dist-hub
+# Tarball is named WITHOUT the version (recon-hub-linux-<arch>.tar.gz).
+# The release tag pins the version on the GitHub side, which lets the
+# install script use stable URLs:
+#   https://github.com/.../releases/latest/download/recon-hub-linux-amd64.tar.gz
+#   https://github.com/.../releases/download/v0.1.0/recon-hub-linux-amd64.tar.gz
+# DIST_VER is still stamped into the binary's --version output via LDFLAGS.
 dist-hub:
 	@mkdir -p $(DIST_DIR)
 	@for arch in amd64 arm64; do \
 		echo "==> recon-hub linux/$$arch"; \
-		mkdir -p $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/{bin,deploy/systemd,deploy/nginx,deploy/docs}; \
+		mkdir -p $(DIST_DIR)/recon-hub-linux-$$arch/{bin,deploy/systemd,deploy/nginx,deploy/docs}; \
 		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
 		  $(GO) build -ldflags "$(LDFLAGS)" \
-		  -o $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/bin/recon-hub ./cmd/hub; \
-		cp deploy/systemd/recon-hub.service $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/deploy/systemd/; \
-		cp deploy/nginx/recon.conf          $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/deploy/nginx/; \
-		cp deploy/docs/install.md           $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch/deploy/docs/; \
-		tar czf $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch.tar.gz \
-		  -C $(DIST_DIR) recon-hub-$(DIST_VER)-linux-$$arch; \
-		rm -rf $(DIST_DIR)/recon-hub-$(DIST_VER)-linux-$$arch; \
+		  -o $(DIST_DIR)/recon-hub-linux-$$arch/bin/recon-hub ./cmd/hub; \
+		cp deploy/systemd/recon-hub.service $(DIST_DIR)/recon-hub-linux-$$arch/deploy/systemd/; \
+		cp deploy/nginx/recon.conf          $(DIST_DIR)/recon-hub-linux-$$arch/deploy/nginx/; \
+		cp deploy/docs/install.md           $(DIST_DIR)/recon-hub-linux-$$arch/deploy/docs/; \
+		tar czf $(DIST_DIR)/recon-hub-linux-$$arch.tar.gz \
+		  -C $(DIST_DIR) recon-hub-linux-$$arch; \
+		rm -rf $(DIST_DIR)/recon-hub-linux-$$arch; \
 	done
 
 .PHONY: dist-agent
@@ -91,15 +97,15 @@ dist-agent:
 	@mkdir -p $(DIST_DIR)
 	@for arch in amd64 arm64; do \
 		echo "==> recon-agent linux/$$arch"; \
-		mkdir -p $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/{bin,deploy/systemd,deploy/sudoers}; \
+		mkdir -p $(DIST_DIR)/recon-agent-linux-$$arch/{bin,deploy/systemd,deploy/sudoers}; \
 		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
 		  $(GO) build -ldflags "$(LDFLAGS)" \
-		  -o $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/bin/recon-agent ./cmd/agent; \
-		cp deploy/systemd/recon-agent.service $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/deploy/systemd/; \
-		cp deploy/sudoers/recon               $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch/deploy/sudoers/; \
-		tar czf $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch.tar.gz \
-		  -C $(DIST_DIR) recon-agent-$(DIST_VER)-linux-$$arch; \
-		rm -rf $(DIST_DIR)/recon-agent-$(DIST_VER)-linux-$$arch; \
+		  -o $(DIST_DIR)/recon-agent-linux-$$arch/bin/recon-agent ./cmd/agent; \
+		cp deploy/systemd/recon-agent.service $(DIST_DIR)/recon-agent-linux-$$arch/deploy/systemd/; \
+		cp deploy/sudoers/recon               $(DIST_DIR)/recon-agent-linux-$$arch/deploy/sudoers/; \
+		tar czf $(DIST_DIR)/recon-agent-linux-$$arch.tar.gz \
+		  -C $(DIST_DIR) recon-agent-linux-$$arch; \
+		rm -rf $(DIST_DIR)/recon-agent-linux-$$arch; \
 	done
 
 .PHONY: clean

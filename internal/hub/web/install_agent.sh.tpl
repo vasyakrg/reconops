@@ -40,7 +40,7 @@ install -d -m 0750 -o recon -g recon "$STATE_DIR"
 install -d -m 0755 "$CONF_DIR"
 
 # ── binary ──────────────────────────────────────────────────────────────────
-TARBALL="recon-agent-${VERSION}-linux-${ARCH}.tar.gz"
+TARBALL="recon-agent-linux-${ARCH}.tar.gz"
 URL="${DOWNLOAD_BASE}/${TARBALL}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT

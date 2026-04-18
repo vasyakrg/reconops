@@ -199,7 +199,7 @@ func main() {
 	}
 
 	install := web.InstallConfig{
-		DownloadBaseURL:   cfg.Install.DownloadBaseURL,
+		ReleaseRepoURL:    cfg.Install.ReleaseRepoURL,
 		AgentGRPCEndpoint: cfg.Install.AgentGRPCEndpoint,
 		Version:           cfg.Install.Version,
 	}

@@ -46,18 +46,18 @@ func (s *Server) handleInstallAgentScript(w http.ResponseWriter, r *http.Request
 	if hubEP == "" {
 		hubEP = s.install.AgentGRPCEndpoint
 	}
-	version := q.Get("version")
-	if version == "" {
-		version = s.install.Version
+	// Per-request version override: the operator can pin a specific release
+	// without changing hub.yaml by passing ?version=v0.2.3 in the URL.
+	cfg := s.install
+	if v := q.Get("version"); v != "" {
+		cfg.Version = v
 	}
-	// All four substitutions go through shellQuote — they end up inside
-	// double quotes in the script so any " or $ would otherwise break out.
 	body := strings.NewReplacer(
 		"__TOKEN__", shellQuote(token),
 		"__AGENT_ID__", shellQuote(agentID),
 		"__HUB_ENDPOINT__", shellQuote(hubEP),
-		"__VERSION__", shellQuote(version),
-		"__DOWNLOAD_BASE__", shellQuote(s.install.DownloadBaseURL),
+		"__VERSION__", shellQuote(cfg.Version),
+		"__DOWNLOAD_BASE__", shellQuote(cfg.DownloadBase()),
 	).Replace(installScriptTemplate)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
