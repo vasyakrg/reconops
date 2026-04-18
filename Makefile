@@ -146,8 +146,16 @@ compose-gen-token: ## Issue a bootstrap token; AGENT_ID=… required, TTL=24h op
 	  --config /etc/recon/hub.yaml --mode gen-token \
 	  --agent-id "$(AGENT_ID)" --token-ttl "$${TTL:-24h}"
 
+.PHONY: compose-reset
+compose-reset: ## Wipe ALL hub state (db, artifacts, CA) + agent state, then bring the stack back up
+	@echo "this wipes recon-state + recon-agent-state volumes — every investigation, host, finding, audit row is gone"
+	@read -p "type 'yes' to continue: " ok && test "$$ok" = "yes"
+	@$(COMPOSE) --profile with-agent down -v
+	@$(COMPOSE) up -d
+	@echo "stack back up — re-bootstrap each agent with the install one-liner."
+
 .PHONY: compose-rotate-ca
-compose-rotate-ca: ## Regenerate the bootstrap CA so SAN changes in hub.yaml take effect (invalidates ALL enrolled agents)
+compose-rotate-ca: ## Regenerate the bootstrap CA so SAN changes in hub.yaml take effect (invalidates ALL enrolled agents, keeps db/audit)
 	@echo "this wipes /var/lib/recon/ca/ and EVERY agent's enrolled identity"
 	@read -p "type 'yes' to continue: " ok && test "$$ok" = "yes"
 	@$(COMPOSE) --profile with-agent stop agent >/dev/null 2>&1 || true
