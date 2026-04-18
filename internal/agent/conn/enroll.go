@@ -25,9 +25,17 @@ import (
 // the returned client cert + CA. After this, the agent uses mTLS only.
 //
 // Idempotent: if cert and key already exist on disk, returns nil immediately.
+//
+// Crashloop guard: bootstrap tokens are single-use (consumed by the hub on
+// first successful Enroll). If the cert files are missing AND there is no
+// usable token on disk, we exit with a clear error rather than spamming
+// the hub with a token that has already been consumed.
 func Enroll(ctx context.Context, cfg *Config) error {
 	if fileExists(cfg.Hub.Cert) && fileExists(cfg.Hub.Key) && fileExists(cfg.Hub.CACert) {
 		return nil
+	}
+	if cfg.Hub.BootstrapTokenInline == "" && (cfg.Hub.BootstrapToken == "" || !fileExists(cfg.Hub.BootstrapToken)) {
+		return errors.New("agent state has no client cert AND no bootstrap token — operator must issue a fresh token (see hub /hosts → Quick install)")
 	}
 
 	token, err := readToken(cfg.Hub)
@@ -84,6 +92,13 @@ func Enroll(ctx context.Context, cfg *Config) error {
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	if err := writeFile(cfg.Hub.Key, keyPEM, 0o600); err != nil {
 		return err
+	}
+	// Token is single-use on the hub side — drop the on-disk copy so a
+	// later restart whose state got partially wiped doesn't burn cycles
+	// re-trying a now-consumed token. File-based path only; an inline
+	// token in YAML is the operator's responsibility to remove.
+	if cfg.Hub.BootstrapToken != "" && fileExists(cfg.Hub.BootstrapToken) {
+		_ = os.Remove(cfg.Hub.BootstrapToken)
 	}
 	return nil
 }
