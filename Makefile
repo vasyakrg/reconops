@@ -146,6 +146,17 @@ compose-gen-token: ## Issue a bootstrap token; AGENT_ID=… required, TTL=24h op
 	  --config /etc/recon/hub.yaml --mode gen-token \
 	  --agent-id "$(AGENT_ID)" --token-ttl "$${TTL:-24h}"
 
+.PHONY: compose-rotate-ca
+compose-rotate-ca: ## Regenerate the bootstrap CA so SAN changes in hub.yaml take effect (invalidates ALL enrolled agents)
+	@echo "this wipes /var/lib/recon/ca/ and EVERY agent's enrolled identity"
+	@read -p "type 'yes' to continue: " ok && test "$$ok" = "yes"
+	@$(COMPOSE) --profile with-agent stop agent >/dev/null 2>&1 || true
+	@$(COMPOSE) stop hub >/dev/null 2>&1 || true
+	@docker run --rm -v recon_recon-state:/state alpine sh -c \
+	  'rm -rf /state/ca && echo "CA wiped — old client certs are now stale"'
+	@$(COMPOSE) up -d --force-recreate hub
+	@echo "CA regenerated on hub start. Re-bootstrap each agent with the install one-liner."
+
 .PHONY: compose-bootstrap-agent
 compose-bootstrap-agent: ## (Re-)bootstrap the local-compose-agent: stop it, wipe state, revoke prior identity on the hub, issue a fresh token, start it
 	@$(COMPOSE) ps hub | grep -q "Up" || (echo "hub is not running — make compose-up first" && exit 1)
