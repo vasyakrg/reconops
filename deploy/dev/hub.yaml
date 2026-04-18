@@ -1,0 +1,14 @@
+server:
+  grpc_addr: "127.0.0.1:9443"
+  http_addr: "127.0.0.1:8080"
+  dns_names: ["localhost"]
+  ip_addrs: ["127.0.0.1"]
+
+storage:
+  db_path: ./deploy/dev/state/recon.db
+  artifact_dir: ./deploy/dev/state/artifacts
+  ca_dir: ./deploy/dev/state/ca
+  retention_days: 7
+
+auth:
+  admin_users: ["vasyansk"]

@@ -1,0 +1,26 @@
+{{define "content"}}
+<h2>Hosts</h2>
+{{if .Hosts}}
+<table>
+  <thead>
+    <tr><th>ID</th><th>Status</th><th>Agent</th><th>Labels</th><th>Last seen (UTC)</th><th>First seen</th></tr>
+  </thead>
+  <tbody>
+  {{range .Hosts}}
+    <tr>
+      <td>{{.ID}}</td>
+      <td class="status-{{.Status}}">{{.Status}}</td>
+      <td>{{.AgentVersion}}</td>
+      <td>
+        {{range $k, $v := .Labels}}<span class="small">{{$k}}={{$v}}</span><br>{{end}}
+      </td>
+      <td>{{.LastSeenAt.Format "2006-01-02 15:04:05"}}</td>
+      <td>{{.FirstSeenAt.Format "2006-01-02 15:04:05"}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No agents enrolled yet. Issue a bootstrap token: <code>recon-hub gen-token</code>.</p>
+{{end}}
+{{end}}

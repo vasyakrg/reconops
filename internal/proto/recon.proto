@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package recon.v1;
+
+option go_package = "github.com/vasyakrg/recon/internal/proto;reconpb";
+
+// Hub is the only gRPC service exposed to agents.
+// IMPORTANT: this contract must remain read-only. There is intentionally no
+// RPC capable of mutating agent host state. See PROJECT.md §3.4 layer 1.
+service Hub {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc Connect(stream AgentMsg) returns (stream HubMsg);
+}
+
+message EnrollRequest {
+  string bootstrap_token = 1;
+  string agent_id        = 2;
+  bytes  csr_pem         = 3;
+}
+
+message EnrollResponse {
+  bytes client_cert_pem = 1;
+  bytes hub_ca_pem      = 2;
+}
+
+message AgentMsg {
+  oneof payload {
+    Hello         hello     = 1;
+    Heartbeat     heartbeat = 2;
+    CollectResult result    = 3;
+    ArtifactChunk artifact  = 4;
+  }
+}
+
+message HubMsg {
+  oneof payload {
+    CollectRequest collect = 1;
+    CancelRequest  cancel  = 2;
+    ConfigUpdate   config  = 3;
+  }
+}
+
+message Hello {
+  string                     agent_id   = 1;
+  string                     version    = 2;
+  map<string, string>        labels     = 3;
+  repeated CollectorManifest collectors = 4;
+  map<string, string>        facts      = 5; // auto-facts (os, kernel, primary_ip, ...)
+}
+
+message Heartbeat {
+  string agent_id = 1;
+  int64  uptime_s = 2;
+  int64  ts_unix  = 3;
+}
+
+message CollectorManifest {
+  string          name         = 1;
+  string          version      = 2;
+  string          category     = 3;
+  string          description  = 4;
+  repeated string reads        = 5;
+  repeated string requires     = 6;
+  bytes           params_schema = 7; // JSON schema bytes
+  bytes           output_schema = 8; // JSON schema bytes
+}
+
+message CollectRequest {
+  string              request_id      = 1;
+  string              collector       = 2;
+  map<string, string> params          = 3;
+  int32               timeout_seconds = 4;
+}
+
+message CancelRequest {
+  string request_id = 1;
+}
+
+message ConfigUpdate {
+  // Reserved for future hub-pushed agent config changes (e.g., log level).
+  // No mutating semantics on the host itself.
+  map<string, string> values = 1;
+}
+
+message CollectResult {
+  string          request_id    = 1;
+  Status          status        = 2;
+  bytes           data_json     = 3;
+  string          error         = 4;
+  repeated string artifact_refs = 5;
+  repeated Hint   hints         = 6;
+  string          stderr        = 7;
+  int32           exit_code     = 8;
+  int64           duration_ms   = 9;
+}
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_OK          = 1;
+  STATUS_ERROR       = 2;
+  STATUS_TIMEOUT     = 3;
+  STATUS_CANCELED    = 4;
+}
+
+message Hint {
+  string severity      = 1; // info | warn | error
+  string code          = 2; // e.g. "service.inactive"
+  string message       = 3;
+  bytes  evidence_json = 4;
+}
+
+message ArtifactChunk {
+  string request_id  = 1;
+  string artifact_id = 2;
+  string name        = 3; // e.g. "journalctl.kubelet.txt"
+  string mime        = 4;
+  int64  offset      = 5;
+  bytes  data        = 6;
+  bool   last        = 7;
+}

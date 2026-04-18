@@ -1,0 +1,11 @@
+bin/
+*.test
+*.out
+coverage.*
+.idea/
+.vscode/
+.DS_Store
+deploy/dev/state/
+*.db
+*.db-shm
+*.db-wal

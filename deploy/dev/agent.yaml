@@ -1,0 +1,19 @@
+hub:
+  endpoint: "127.0.0.1:9443"
+  ca_cert:  ./deploy/dev/state/agent/hub-ca.pem
+  cert:     ./deploy/dev/state/agent/agent.pem
+  key:      ./deploy/dev/state/agent/agent.key
+  bootstrap_token: ./deploy/dev/state/agent/bootstrap.token
+  server_name: localhost
+
+identity:
+  id: dev-agent-1
+  labels:
+    env: dev
+    role: laptop
+
+runtime:
+  max_concurrent_collectors: 4
+  artifact_dir: ./deploy/dev/state/agent/artifacts
+  default_timeout: 30s
+  heartbeat_interval: 5s

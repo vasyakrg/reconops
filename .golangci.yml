@@ -1,0 +1,99 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - forbidigo
+    - depguard
+    - gosec
+    - misspell
+    - staticcheck
+    - unused
+
+  settings:
+    forbidigo:
+      # Textual matching catches all forbidden names listed below EXCEPT
+      # `os.Create` / `os.CreateTemp` (a known forbidigo limitation around
+      # certain stdlib selector exprs). Those two are caught by gosec G303
+      # (file creation in shared tmp) — leave G303 on for collectors/.
+      analyze-types: false
+      forbid:
+        # Mutating filesystem APIs are forbidden inside collectors.
+        # Read-only is a load-bearing protocol property (PROJECT.md §3.4).
+        - pattern: '^os\.Remove(All)?$'
+          msg: "collectors are read-only — no os.Remove/RemoveAll (PROJECT.md §3.4)"
+        - pattern: '^os\.Rename$'
+          msg: "collectors are read-only — no os.Rename (PROJECT.md §3.4)"
+        - pattern: '^os\.Mkdir(All)?$'
+          msg: "collectors must not create paths (PROJECT.md §3.4)"
+        - pattern: '^os\.Chmod$'
+          msg: "collectors must not chmod (PROJECT.md §3.4)"
+        - pattern: '^os\.Chown$'
+          msg: "collectors must not chown (PROJECT.md §3.4)"
+        - pattern: '^os\.WriteFile$'
+          msg: "collectors must not write files (PROJECT.md §3.4)"
+        - pattern: '^os\.Truncate$'
+          msg: "collectors must not truncate files (PROJECT.md §3.4)"
+        - pattern: '^os\.Symlink$'
+          msg: "collectors must not create symlinks (PROJECT.md §3.4)"
+        - pattern: '^os\.OpenFile$'
+          msg: "collectors must use os.Open (read-only); os.OpenFile flags can mutate (PROJECT.md §3.4)"
+        - pattern: '^os\.Create$'
+          msg: "collectors must not create files (PROJECT.md §3.4)"
+        - pattern: '^os\.NewFile$'
+          msg: "collectors must not adopt arbitrary fds (PROJECT.md §3.4)"
+        - pattern: '^syscall\.Unlink$'
+          msg: "collectors are read-only — syscall.Unlink forbidden (PROJECT.md §3.4)"
+        - pattern: '^syscall\.(Open|Creat|Openat|Renameat|Unlinkat|Symlinkat|Linkat|Mkdirat|Rmdir|Rename|Link|Symlink|Mkdir|Mknod|Mount|Umount|Truncate|Ftruncate|Chmod|Chown|Fchmod|Fchown|Setxattr|Removexattr|Write|Writev|Pwrite|Sendfile)$'
+          msg: "collectors must not invoke mutating syscalls (PROJECT.md §3.4)"
+
+    gosec:
+      excludes:
+        # G304 (file inclusion via variable) is a false positive throughout —
+        # we open paths from typed config / /proc / /etc fixtures, never
+        # user-tainted strings. The exec gateway (G204) is the chokepoint
+        # itself — see internal/agent/exec/readonly.go for why this is safe.
+        - G304
+        - G204
+      # G303 (file creation in shared /tmp) MUST stay on globally — it is the
+      # backstop that catches collector os.Create("/tmp/...") attempts that
+      # forbidigo misses (see comment on forbidigo above).
+
+    depguard:
+      rules:
+        collectors-no-direct-exec:
+          # Collectors must call external binaries through the readonly gateway,
+          # never via os/exec directly (PROJECT.md §3.4 layer 3). Also block
+          # other packages that trivially escape the read-only model.
+          files:
+            - '$all'
+          deny:
+            - pkg: 'os/exec'
+              desc: "collectors must use internal/agent/exec gateway, not os/exec directly (PROJECT.md §3.4)"
+            - pkg: 'golang.org/x/sys/unix'
+              desc: "collectors must not invoke unix syscalls directly — exposes mutating ops (PROJECT.md §3.4)"
+            - pkg: 'plugin'
+              desc: "collectors are compiled-in; runtime plugin loading violates layer 2 (PROJECT.md §3.4)"
+            - pkg: 'net/http/cgi'
+              desc: "no cgi in collectors (PROJECT.md §3.4)"
+
+  exclusions:
+    # Apply forbidigo + depguard rules ONLY inside collectors/.
+    # The rest of the code may legitimately exec, write files, etc.
+    rules:
+      - linters: [forbidigo, depguard]
+        path-except: 'internal/agent/collectors/'
+      # Exec gateway itself imports os/exec — that's its job.
+      - linters: [depguard]
+        path: 'internal/agent/exec/'
+      # Tests can use whatever they need.
+      - linters: [forbidigo, depguard]
+        path: '_test\.go'
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
