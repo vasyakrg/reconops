@@ -122,7 +122,8 @@ func (s *Server) handleQuickInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	// External URL the script will be fetched from. Honours nginx-set
 	// X-Forwarded-* headers so the URL we hand to the operator points at
-	// the public hostname, not the internal hub:8080.
+	// the public hostname (and port — see nginx.conf using $http_host),
+	// not the internal hub:8080.
 	scheme := "http"
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
@@ -132,7 +133,11 @@ func (s *Server) handleQuickInstall(w http.ResponseWriter, r *http.Request) {
 		host = r.Host
 	}
 	scriptURL := fmt.Sprintf("%s://%s/install/agent.sh?token=%s&id=%s", scheme, host, urlEscape(tok), urlEscape(agentID))
-	oneLiner := fmt.Sprintf(`curl -fsSL %q | sudo bash`, scriptURL)
+	// curl -k tolerates a self-signed nginx cert — the default for `make
+	// compose-up` deployments. Operator running through a real cert
+	// pays the same -k cost (no harm) and gets the convenience of a
+	// one-liner that works on any hub regardless of TLS provenance.
+	oneLiner := fmt.Sprintf(`curl -fsSLk %q | sudo bash`, scriptURL)
 
 	s.audit(r.Context(), authedUser(r), "install.token_issued",
 		map[string]any{"agent_id": agentID, "ttl": ttl.String()})
