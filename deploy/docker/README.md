@@ -48,6 +48,16 @@ make compose-logs
 The UI is on **<https://localhost:8443>** (browser will warn about the self-signed
 cert — accept). gRPC for agents on `localhost:9443`.
 
+> **Firewall:** on a multi-VM setup, agents on remote hosts dial port `9443`
+> directly (not through nginx). If you've enabled ufw / iptables / nftables on
+> the hub host, open the port:
+> ```bash
+> sudo ufw allow 9443/tcp && sudo ufw reload
+> ```
+> A "connect: network is unreachable" error in the agent's journal means
+> something between agent and hub is rejecting `9443` with ICMP-unreachable —
+> almost always a host-level firewall on the hub VM.
+
 ## 3. Local agent (optional)
 
 For end-to-end dev — runs a recon-agent inside compose so you can poke at the
