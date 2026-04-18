@@ -111,6 +111,17 @@ func (l *Loop) Resume(ctx context.Context) error {
 		if inv.Status != "active" {
 			continue
 		}
+		// (review M1) Refuse to resume an investigation whose bootstrap
+		// (system prompt + initial user goal) was lost mid-Start — sending
+		// an empty messages list to the LLM produces undefined behaviour.
+		msgs, err := l.store.ListMessages(ctx, inv.ID, true)
+		if err != nil || len(msgs) < 2 {
+			l.log.Warn("aborting investigation: incomplete bootstrap on resume",
+				"id", inv.ID, "messages", len(msgs))
+			_ = l.store.FinishInvestigation(ctx, inv.ID, "aborted",
+				`{"reason":"incomplete bootstrap (system+user messages missing) on hub restart"}`)
+			continue
+		}
 		l.log.Info("resuming investigation", "id", inv.ID, "tool_calls", inv.TotalToolCalls)
 		l.spawn(inv.ID)
 		resumed++
@@ -140,11 +151,14 @@ func (l *Loop) DecideWithEdit(ctx context.Context, investigationID, decision, ne
 	}
 	switch decision {
 	case "approve":
-		// If this is a broad-selector batch awaiting confirmation, mark the
-		// rationale so executeApproved skips the gate the second time.
+		// If this is a broad-selector batch awaiting confirmation, set the
+		// typed flag so executeApproved skips the gate. Using a column
+		// instead of a rationale-text marker avoids a forge vector where
+		// the model emits the marker text in its own rationale (review C1).
 		if needsBroadConfirm(pending) {
-			_ = l.store.SetToolCallRationale(ctx, pending.ID,
-				pending.Rationale+" [BROAD-SELECTOR-CONFIRMED]")
+			if err := l.store.SetToolCallBroadConfirmed(ctx, pending.ID, true); err != nil {
+				return fmt.Errorf("mark broad-confirmed: %w", err)
+			}
 		}
 		if err := l.store.UpdateToolCall(ctx, pending.ID, "approved", decidedBy, "", ""); err != nil {
 			return err
@@ -153,11 +167,13 @@ func (l *Loop) DecideWithEdit(ctx context.Context, investigationID, decision, ne
 		if newInputJSON == "" {
 			return errors.New("edit requires new_input_json")
 		}
-		// Validate JSON shape — handlers will refuse malformed input later
-		// but failing here gives a clearer 400 to the operator.
-		var probe any
+		// (review H4) Tool arguments must be a JSON object — accepting
+		// `null`/`42`/`"x"` would silently produce zero-valued struct
+		// fields downstream and skip validators that only check for
+		// non-empty strings.
+		var probe map[string]any
 		if err := json.Unmarshal([]byte(newInputJSON), &probe); err != nil {
-			return fmt.Errorf("new_input_json invalid: %w", err)
+			return fmt.Errorf("new_input_json must be a JSON object: %w", err)
 		}
 		if err := l.store.SetToolCallInput(ctx, pending.ID, newInputJSON); err != nil {
 			return err
@@ -208,8 +224,14 @@ func (l *Loop) InjectHypothesis(ctx context.Context, investigationID, claim, exp
 	}
 	if pending != nil {
 		// Discard whatever the model proposed; the hypothesis supersedes it.
-		_ = l.store.UpdateToolCall(ctx, pending.ID, "aborted", decidedBy, "",
-			`{"ok":false,"error":"superseded by operator hypothesis"}`)
+		// (review C2) Bail out on UPDATE failure instead of leaving a stale
+		// pending behind — otherwise the loop deadlocks in step()'s pending
+		// branch and the operator sees both the discarded card and the
+		// injected message.
+		if err := l.store.UpdateToolCall(ctx, pending.ID, "aborted", decidedBy, "",
+			`{"ok":false,"error":"superseded by operator hypothesis"}`); err != nil {
+			return fmt.Errorf("discard pending: %w", err)
+		}
 	}
 	body := "OPERATOR HYPOTHESIS [priority: HIGH]\nClaim: " + claim
 	if expected = strings.TrimSpace(expected); expected != "" {
@@ -225,6 +247,21 @@ func (l *Loop) InjectHypothesis(ctx context.Context, investigationID, claim, exp
 	}
 	l.spawn(investigationID)
 	return nil
+}
+
+// InjectRestoreNote rebuts a previous IGNORED directive (review M4).
+// Without it, the older "do not investigate" message stays in context and
+// the model will keep avoiding the branch the operator just unblocked.
+func (l *Loop) InjectRestoreNote(ctx context.Context, investigationID, findingCode, findingMessage string) error {
+	if l == nil {
+		return nil
+	}
+	body := "OPERATOR ACTIONS (since last turn):\n- Finding [" + findingCode +
+		"] \"" + findingMessage + "\" was RESTORED. The earlier IGNORED directive is rescinded; you may resume investigating this branch."
+	_, err := l.store.AppendMessage(ctx, store.Message{
+		InvestigationID: investigationID, Role: "system_note", Content: body,
+	})
+	return err
 }
 
 // InjectIgnoreNote appends a system_note announcing that a finding has been
@@ -471,8 +508,13 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 		// approve, status flips to 'approved' (not 'edited'); we detect
 		// that by looking at decided_by — the second pass has the marker.
 		if needsBroadConfirm(tc) {
-			_ = l.store.UpdateToolCall(ctx, tc.ID, "pending", "",
-				"BROAD-SELECTOR: more than "+broadSelectorMarker+" hosts; re-approve to proceed", "")
+			// Reset to pending with a human-readable rationale; the typed
+			// broad_confirmed flag is what gates the next pass.
+			_ = l.store.SetToolCallRationale(ctx, tc.ID,
+				fmt.Sprintf("BROAD-SELECTOR: more than %d hosts; re-approve to proceed", broadSelectorThreshold))
+			if err := l.store.UpdateToolCall(ctx, tc.ID, "pending", "", "", ""); err != nil {
+				return err
+			}
 			return nil
 		}
 		exec, err := PrepareCollectBatch(ctx, env, tc.InputJSON)
@@ -588,19 +630,18 @@ func nextSeq(ctx context.Context, st *store.Store, investigationID string) int {
 	return len(tcs) + 1
 }
 
-const broadSelectorMarker = "5"
 const broadSelectorThreshold = 5
 
 // needsBroadConfirm returns true when a collect_batch call hits more hosts
-// than the operator should approve in one click and has not yet been
-// re-approved. After re-approval the rationale already contains the marker;
-// the second pass through executeApproved sees it via tc.Rationale and
-// proceeds.
+// than broadSelectorThreshold AND the typed flag has not yet been set by
+// the operator's second approve. Flag is in tool_calls.broad_confirmed
+// (not in rationale text), so the model cannot forge consent through
+// prompt-level output.
 func needsBroadConfirm(tc *store.ToolCallRow) bool {
 	if tc.Tool != "collect_batch" {
 		return false
 	}
-	if strings.Contains(tc.Rationale, "BROAD-SELECTOR-CONFIRMED") {
+	if tc.BroadConfirmed {
 		return false
 	}
 	var args struct {

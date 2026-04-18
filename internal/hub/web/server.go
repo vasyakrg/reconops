@@ -269,9 +269,17 @@ func (s *Server) handleRunsNew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_ = s.store.AuditLog(r.Context(), "operator", "run.create",
+	s.audit(r.Context(), "operator", "run.create",
 		map[string]any{"run_id": runID, "collector": collector, "host_count": len(hosts)})
 	http.Redirect(w, r, "/runs/"+runID, http.StatusSeeOther)
+}
+
+// audit writes an audit row, escalating any failure to ERROR-level slog —
+// audit is the one table where silent loss is unacceptable (review H2).
+func (s *Server) audit(ctx context.Context, actor, action string, details map[string]any) {
+	if err := s.store.AuditLog(ctx, actor, action, details); err != nil {
+		s.log.Error("audit write failed", "actor", actor, "action", action, "err", err)
+	}
 }
 
 // render executes layout.html, dynamically aliasing the "content" block to
@@ -358,7 +366,7 @@ func (s *Server) handleInvestigationsNew(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_ = s.store.AuditLog(r.Context(), "operator", "investigation.start",
+	s.audit(r.Context(), "operator", "investigation.start",
 		map[string]any{"investigation_id": id, "goal_chars": len(goal)})
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }
@@ -415,7 +423,7 @@ func (s *Server) handleInvestigationDecide(w http.ResponseWriter, r *http.Reques
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_ = s.store.AuditLog(r.Context(), "operator", "investigation.decide",
+	s.audit(r.Context(), "operator", "investigation.decide",
 		map[string]any{"investigation_id": id, "decision": decision, "edited": newInput != ""})
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }
@@ -446,7 +454,7 @@ func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_ = s.store.AuditLog(r.Context(), "operator", "investigation.hypothesis",
+	s.audit(r.Context(), "operator", "investigation.hypothesis",
 		map[string]any{"investigation_id": id, "claim_chars": len(claim)})
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }
@@ -474,12 +482,28 @@ func (s *Server) handleFindingAction(w http.ResponseWriter, r *http.Request) {
 	case "unpin":
 		err = s.store.SetFindingPinned(r.Context(), id, false)
 	case "ignore":
+		// (review M3) Idempotent — re-ignoring an already-ignored finding
+		// must not stack duplicate system_notes in the message stream.
+		if f.Ignored {
+			http.Redirect(w, r, "/investigations/"+f.InvestigationID, http.StatusSeeOther)
+			return
+		}
 		err = s.store.SetFindingIgnored(r.Context(), id, true)
 		if err == nil && s.loop != nil {
 			_ = s.loop.InjectIgnoreNote(r.Context(), f.InvestigationID, f.Code, f.Message)
 		}
 	case "unignore":
+		// (review M4) Idempotent + emit a restore note so the model sees
+		// the IGNORED directive being lifted; otherwise the older "do not
+		// investigate" note hangs in context unrebutted.
+		if !f.Ignored {
+			http.Redirect(w, r, "/investigations/"+f.InvestigationID, http.StatusSeeOther)
+			return
+		}
 		err = s.store.SetFindingIgnored(r.Context(), id, false)
+		if err == nil && s.loop != nil {
+			_ = s.loop.InjectRestoreNote(r.Context(), f.InvestigationID, f.Code, f.Message)
+		}
 	default:
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
@@ -488,7 +512,7 @@ func (s *Server) handleFindingAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_ = s.store.AuditLog(r.Context(), "operator", "finding."+action,
+	s.audit(r.Context(), "operator", "finding."+action,
 		map[string]any{"finding_id": id, "investigation_id": f.InvestigationID})
 	http.Redirect(w, r, "/investigations/"+f.InvestigationID, http.StatusSeeOther)
 }

@@ -48,6 +48,7 @@ type ToolCallRow struct {
 	CreatedAt       time.Time
 	DecidedAt       sql.NullTime
 	ResultJSON      sql.NullString
+	BroadConfirmed  bool // operator passed broad-selector gate (week 4 §9)
 }
 
 type Finding struct {
@@ -212,13 +213,39 @@ func (s *Store) SetToolCallInput(ctx context.Context, id, newInputJSON string) e
 	return err
 }
 
-// SetToolCallRationale overwrites the rationale string. Used by the
-// broad-selector second-confirmation flow to embed a marker.
+// SetToolCallRationale overwrites the rationale string.
 func (s *Store) SetToolCallRationale(ctx context.Context, id, rationale string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE tool_calls SET rationale=? WHERE id=?`, rationale, id)
 	return err
 }
+
+// SetToolCallBroadConfirmed flips the typed flag the broad-selector flow
+// uses (review C1 — replaces a stringy marker that the model could forge).
+func (s *Store) SetToolCallBroadConfirmed(ctx context.Context, id string, v bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE tool_calls SET broad_confirmed=? WHERE id=?`, boolToInt(v), id)
+	return err
+}
+
+// boolPtr is a Scan adapter that accepts SQLite INTEGER 0/1 as a Go bool.
+type boolScanner struct{ dst *bool }
+
+func (b boolScanner) Scan(src any) error {
+	if src == nil {
+		*b.dst = false
+		return nil
+	}
+	switch v := src.(type) {
+	case int64:
+		*b.dst = v != 0
+	case bool:
+		*b.dst = v
+	}
+	return nil
+}
+
+func boolPtr(b *bool) any { return boolScanner{dst: b} }
 
 func (s *Store) UpdateToolCall(ctx context.Context, id, status, decidedBy, taskID, resultJSON string) error {
 	_, err := s.db.ExecContext(ctx, `
@@ -232,10 +259,11 @@ func (s *Store) GetToolCall(ctx context.Context, id string) (ToolCallRow, error)
 	var tc ToolCallRow
 	err := s.db.QueryRowContext(ctx, `
         SELECT id, investigation_id, seq, tool, input_json, COALESCE(rationale,''),
-               status, decided_by, task_id, created_at, decided_at, result_json
+               status, decided_by, task_id, created_at, decided_at, result_json, broad_confirmed
           FROM tool_calls WHERE id=?`, id).
 		Scan(&tc.ID, &tc.InvestigationID, &tc.Seq, &tc.Tool, &tc.InputJSON, &tc.Rationale,
-			&tc.Status, &tc.DecidedBy, &tc.TaskID, &tc.CreatedAt, &tc.DecidedAt, &tc.ResultJSON)
+			&tc.Status, &tc.DecidedBy, &tc.TaskID, &tc.CreatedAt, &tc.DecidedAt, &tc.ResultJSON,
+			boolPtr(&tc.BroadConfirmed))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ToolCallRow{}, fmt.Errorf("tool_call %s not found", id)
 	}
@@ -245,7 +273,7 @@ func (s *Store) GetToolCall(ctx context.Context, id string) (ToolCallRow, error)
 func (s *Store) ListToolCalls(ctx context.Context, investigationID string) ([]ToolCallRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
         SELECT id, investigation_id, seq, tool, input_json, COALESCE(rationale,''),
-               status, decided_by, task_id, created_at, decided_at, result_json
+               status, decided_by, task_id, created_at, decided_at, result_json, broad_confirmed
           FROM tool_calls WHERE investigation_id=? ORDER BY seq`, investigationID)
 	if err != nil {
 		return nil, err
@@ -255,7 +283,8 @@ func (s *Store) ListToolCalls(ctx context.Context, investigationID string) ([]To
 	for rows.Next() {
 		var tc ToolCallRow
 		if err := rows.Scan(&tc.ID, &tc.InvestigationID, &tc.Seq, &tc.Tool, &tc.InputJSON, &tc.Rationale,
-			&tc.Status, &tc.DecidedBy, &tc.TaskID, &tc.CreatedAt, &tc.DecidedAt, &tc.ResultJSON); err != nil {
+			&tc.Status, &tc.DecidedBy, &tc.TaskID, &tc.CreatedAt, &tc.DecidedAt, &tc.ResultJSON,
+			boolPtr(&tc.BroadConfirmed)); err != nil {
 			return nil, err
 		}
 		out = append(out, tc)
@@ -270,11 +299,12 @@ func (s *Store) PendingToolCall(ctx context.Context, investigationID string) (*T
 	var tc ToolCallRow
 	err := s.db.QueryRowContext(ctx, `
         SELECT id, investigation_id, seq, tool, input_json, COALESCE(rationale,''),
-               status, decided_by, task_id, created_at, decided_at, result_json
+               status, decided_by, task_id, created_at, decided_at, result_json, broad_confirmed
           FROM tool_calls WHERE investigation_id=? AND status='pending'
           ORDER BY seq DESC LIMIT 1`, investigationID).
 		Scan(&tc.ID, &tc.InvestigationID, &tc.Seq, &tc.Tool, &tc.InputJSON, &tc.Rationale,
-			&tc.Status, &tc.DecidedBy, &tc.TaskID, &tc.CreatedAt, &tc.DecidedAt, &tc.ResultJSON)
+			&tc.Status, &tc.DecidedBy, &tc.TaskID, &tc.CreatedAt, &tc.DecidedAt, &tc.ResultJSON,
+			boolPtr(&tc.BroadConfirmed))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

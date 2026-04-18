@@ -112,6 +112,29 @@ func TestMessageToolCallsRoundtrip(t *testing.T) {
 	}
 }
 
+func TestToolCallBroadConfirmedFlag(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	_ = s.InsertInvestigation(ctx, Investigation{
+		ID: "inv-bc", Goal: "g", Status: "active", CreatedBy: "o", Model: "m", BaseURL: "u",
+	})
+	_ = s.InsertToolCall(ctx, ToolCallRow{
+		ID: "tc-bc", InvestigationID: "inv-bc", Seq: 1,
+		Tool: "collect_batch", InputJSON: `{"host_ids":["h1","h2"]}`, Status: "pending",
+	})
+	tc, _ := s.GetToolCall(ctx, "tc-bc")
+	if tc.BroadConfirmed {
+		t.Fatal("default should be false")
+	}
+	if err := s.SetToolCallBroadConfirmed(ctx, "tc-bc", true); err != nil {
+		t.Fatal(err)
+	}
+	tc, _ = s.GetToolCall(ctx, "tc-bc")
+	if !tc.BroadConfirmed {
+		t.Fatal("flag round-trip failed")
+	}
+}
+
 func TestForeignKeyCascade(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
