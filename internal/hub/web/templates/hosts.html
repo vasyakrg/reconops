@@ -2,7 +2,7 @@
 <header class="pg-hd">
   <div>
     <div class="title">Hosts</div>
-    <div class="sub mono">{{len .Hosts}} enrolled</div>
+    <div class="sub mono">{{len .Hosts}} enrolled{{if .LatestVersion}} · latest agent <a href="{{.ReleasesURL}}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">{{.LatestVersion}}</a>{{end}}</div>
   </div>
   <div class="actions">
     {{if .InstallEnabled}}
@@ -49,7 +49,7 @@
     <th style="width:140px">OS / kernel</th>
     <th style="width:60px">CPU</th>
     <th style="width:70px">RAM</th>
-    <th style="width:90px">Agent</th>
+    <th style="width:140px">Agent</th>
     <th style="width:120px">Last seen</th>
   </tr></thead>
   <tbody>
@@ -66,7 +66,15 @@
       <td class="mono muted" style="font-size:11px">{{index .Facts "os"}}{{if index .Facts "arch"}} {{index .Facts "arch"}}{{end}}{{with index .Facts "kernel"}}<br><span style="font-size:10.5px">{{.}}</span>{{end}}</td>
       <td class="mono" style="color:var(--fg-1)">{{index .Facts "cpu_count"}}</td>
       <td class="mono" style="color:var(--fg-1)">{{with index .Facts "ram_gb"}}{{.}}G{{end}}</td>
-      <td class="mono muted" style="font-size:11px">{{.AgentVersion}}</td>
+      <td class="mono" style="font-size:11px">
+        <span class="muted">{{.AgentVersion}}</span>
+        {{if outdated .AgentVersion $.LatestVersion}}
+        <button type="button" class="btn xs"
+                onclick="event.stopPropagation();showUpdateHint('{{.ID}}','{{.AgentVersion}}','{{$.LatestVersion}}','{{with index .Facts "arch"}}{{.}}{{else}}amd64{{end}}','{{$.ReleasesURL}}')"
+                title="Show update command"
+                style="margin-left:4px;color:var(--warn);border-color:var(--warn);background:var(--warn-bg)">↑ update</button>
+        {{end}}
+      </td>
       <td class="mono muted" style="font-size:11px" title="{{.LastSeenAt.UTC.Format "2006-01-02 15:04:05 UTC"}}">{{sinceUTC .LastSeenAt}}</td>
     </tr>
   {{end}}

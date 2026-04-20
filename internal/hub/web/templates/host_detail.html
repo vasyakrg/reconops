@@ -7,6 +7,12 @@
       {{else if eq .Host.Status "offline"}}<span class="badge err"><span class="dot offline" style="width:6px;height:6px"></span>offline</span>
       {{else}}<span class="badge warn"><span class="dot warn pulse" style="width:6px;height:6px"></span>{{.Host.Status}}</span>{{end}}
       <span class="mono muted" style="font-size:11.5px">agent v{{.Host.AgentVersion}}</span>
+      {{if outdated .Host.AgentVersion .LatestVersion}}
+      <button type="button" class="btn xs"
+              onclick="showUpdateHint('{{.Host.ID}}','{{.Host.AgentVersion}}','{{.LatestVersion}}','{{with index .Host.Facts "arch"}}{{.}}{{else}}amd64{{end}}','{{.ReleasesURL}}')"
+              title="Show update command"
+              style="color:var(--warn);border-color:var(--warn);background:var(--warn-bg)">↑ update to {{.LatestVersion}}</button>
+      {{end}}
       <span class="mono muted" style="font-size:11.5px" title="{{.Host.LastSeenAt.UTC.Format "2006-01-02 15:04:05 UTC"}}">last seen {{sinceUTC .Host.LastSeenAt}}</span>
     </div>
   </div>

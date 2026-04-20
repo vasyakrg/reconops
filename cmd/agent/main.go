@@ -19,6 +19,7 @@ import (
 	_ "github.com/vasyakrg/recon/internal/agent/collectors/systemd"   // register systemd_units, journal_tail
 	"github.com/vasyakrg/recon/internal/agent/conn"
 	"github.com/vasyakrg/recon/internal/agent/exec"
+	"github.com/vasyakrg/recon/internal/agent/update"
 	"github.com/vasyakrg/recon/internal/common/version"
 )
 
@@ -52,6 +53,21 @@ func main() {
 	if err := conn.Enroll(ctx, cfg); err != nil {
 		log.Error("enroll", "err", err)
 		os.Exit(3)
+	}
+
+	// Opt-in self-updater (off by default — see update.UpdateConfig docs).
+	if cfg.Update.Enabled {
+		upd := update.New(update.Options{
+			RepoURL:         cfg.Update.RepoURL,
+			CheckInterval:   cfg.Update.CheckInterval,
+			BinaryPath:      cfg.Update.BinaryPath,
+			AllowPrerelease: cfg.Update.AllowPrerelease,
+		}, log.With("comp", "selfupdate"))
+		if upd != nil {
+			go upd.Run(ctx)
+		} else {
+			log.Warn("self-updater enabled in config but disabled — repo_url/binary_path missing or invalid")
+		}
 	}
 
 	c := conn.NewClient(cfg, log)

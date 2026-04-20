@@ -20,6 +20,7 @@ import (
 
 	"github.com/vasyakrg/recon/internal/common/version"
 	"github.com/vasyakrg/recon/internal/hub/investigator"
+	"github.com/vasyakrg/recon/internal/hub/release"
 	hubrunner "github.com/vasyakrg/recon/internal/hub/runner"
 	"github.com/vasyakrg/recon/internal/hub/store"
 )
@@ -34,6 +35,7 @@ type Server struct {
 	store    *store.Store
 	runner   *hubrunner.Runner
 	loop     *investigator.Loop // optional — nil when LLM is not configured
+	release  *release.Poller    // optional — nil when release repo URL is unset/invalid
 	tpl      *template.Template
 	log      *slog.Logger
 	auth     authConfig
@@ -109,7 +111,7 @@ func (a AuthConfig) Enabled() bool { return a.Username != "" && a.PasswordHash !
 func GenPasswordHash(pw string) (string, error) { return PasswordHashFromPlaintext(pw) }
 
 func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loop,
-	auth AuthConfig, install InstallConfig, log *slog.Logger) (*Server, error) {
+	rel *release.Poller, auth AuthConfig, install InstallConfig, log *slog.Logger) (*Server, error) {
 	tpl, err := template.New("").Funcs(template.FuncMap{
 		"prettyJSON": prettyJSON,
 		"truncate":   truncate,
@@ -134,6 +136,7 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 		"barRepeat":  barRepeat,
 		"replaceAll": strings.ReplaceAll,
 		"now":        func() time.Time { return time.Now().UTC() },
+		"outdated":   release.Outdated,
 	}).ParseFS(tplFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -142,7 +145,7 @@ func NewServer(st *store.Store, runner *hubrunner.Runner, loop *investigator.Loo
 		auth.SessionTTL = 12 * time.Hour
 	}
 	return &Server{
-		store: st, runner: runner, loop: loop, tpl: tpl, log: log,
+		store: st, runner: runner, loop: loop, release: rel, tpl: tpl, log: log,
 		auth:     authConfig(auth),
 		install:  install,
 		sessions: newSessionStore(st),
@@ -238,12 +241,19 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 		oneLiner = s.sessions.popFlash(sid.Value, "install_one_liner")
 		installAgentID = s.sessions.popFlash(sid.Value, "install_agent_id")
 	}
+	latest, releasesURL := "", ""
+	if s.release != nil {
+		latest, _ = s.release.Latest()
+		releasesURL = s.release.ReleasesURL()
+	}
 	s.renderForReq(w, r, "hosts", map[string]any{
 		"Title":           "Hosts",
 		"Hosts":           hosts,
 		"InstallEnabled":  s.install.Enabled(),
 		"InstallOneLiner": oneLiner,
 		"InstallAgentID":  installAgentID,
+		"LatestVersion":   latest,
+		"ReleasesURL":     releasesURL,
 	})
 }
 
@@ -259,12 +269,19 @@ func (s *Server) handleHostDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mans, _ := s.store.ListCollectorManifests(r.Context(), id)
+	latest, releasesURL := "", ""
+	if s.release != nil {
+		latest, _ = s.release.Latest()
+		releasesURL = s.release.ReleasesURL()
+	}
 	s.renderForReq(w, r, "host_detail", map[string]any{
-		"Title":        "Host " + id,
-		"Version":      version.Version,
-		"ContentBlock": "host_detail",
-		"Host":         host,
-		"Collectors":   mans,
+		"Title":         "Host " + id,
+		"Version":       version.Version,
+		"ContentBlock":  "host_detail",
+		"Host":          host,
+		"Collectors":    mans,
+		"LatestVersion": latest,
+		"ReleasesURL":   releasesURL,
 	})
 }
 

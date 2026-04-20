@@ -12,6 +12,22 @@ type Config struct {
 	Hub      HubConfig      `yaml:"hub"`
 	Identity IdentityConfig `yaml:"identity"`
 	Runtime  RuntimeConfig  `yaml:"runtime"`
+	Update   UpdateConfig   `yaml:"update"`
+}
+
+// UpdateConfig controls the opt-in self-updater. When Enabled is true the
+// agent periodically queries the GitHub Releases API (RepoURL) and, on a
+// newer tag, downloads recon-agent-linux-<arch>.tar.gz, verifies the SHA256
+// via the checksums.txt artifact, swaps its own binary on disk and execs
+// exit(0) so systemd restarts it on the new version. When false (default)
+// the agent never touches disk — the operator runs the install one-liner
+// manually, preserving the read-only-by-default invariant.
+type UpdateConfig struct {
+	Enabled         bool          `yaml:"enabled"`
+	RepoURL         string        `yaml:"repo_url"`       // https://github.com/<owner>/<repo>
+	CheckInterval   time.Duration `yaml:"check_interval"` // min 10m; default 1h
+	BinaryPath      string        `yaml:"binary_path"`    // path to swap; default /usr/local/bin/recon-agent
+	AllowPrerelease bool          `yaml:"allow_prerelease"`
 }
 
 type HubConfig struct {
@@ -63,6 +79,15 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Identity.Labels == nil {
 		cfg.Identity.Labels = map[string]string{}
+	}
+	if cfg.Update.CheckInterval <= 0 {
+		cfg.Update.CheckInterval = time.Hour
+	}
+	if cfg.Update.CheckInterval < 10*time.Minute {
+		cfg.Update.CheckInterval = 10 * time.Minute
+	}
+	if cfg.Update.BinaryPath == "" {
+		cfg.Update.BinaryPath = "/usr/local/bin/recon-agent"
 	}
 	return cfg, nil
 }

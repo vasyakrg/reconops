@@ -17,3 +17,18 @@ runtime:
   artifact_dir: ./deploy/dev/state/agent/artifacts
   default_timeout: 30s
   heartbeat_interval: 5s
+
+# Opt-in self-updater. When `enabled: true`, the agent polls GitHub Releases
+# every `check_interval` (min 10m, default 1h), and on a newer tag it
+# downloads recon-agent-linux-<arch>.tar.gz, verifies SHA256 from
+# checksums.txt, swaps the binary at `binary_path`, and exits — systemd's
+# Restart=always brings it back on the new version.
+# Default is `enabled: false`: the agent never touches disk; operators run
+# the install one-liner manually. This keeps the read-only-by-default
+# invariant intact for fleets where remote self-modification is undesirable.
+update:
+  enabled: false
+  repo_url: https://github.com/vasyakrg/reconops
+  check_interval: 1h
+  binary_path: /usr/local/bin/recon-agent
+  allow_prerelease: false

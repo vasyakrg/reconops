@@ -18,6 +18,7 @@ import (
 	"github.com/vasyakrg/recon/internal/hub/auth"
 	"github.com/vasyakrg/recon/internal/hub/investigator"
 	"github.com/vasyakrg/recon/internal/hub/llm"
+	"github.com/vasyakrg/recon/internal/hub/release"
 	"github.com/vasyakrg/recon/internal/hub/retention"
 	hubrunner "github.com/vasyakrg/recon/internal/hub/runner"
 	"github.com/vasyakrg/recon/internal/hub/store"
@@ -211,7 +212,14 @@ func main() {
 		ExternalURL:       cfg.Install.ExternalURL,
 		TrustedTLS:        cfg.Install.TrustedTLS,
 	}
-	webSrv, err := web.NewServer(st, hr, loop, auth, install, log.With("comp", "web"))
+	// Release poller — best-effort GitHub Releases fetch so the UI can show
+	// "latest agent vX.Y.Z" and flag outdated hosts. nil when the repo URL
+	// isn't a GitHub https:// URL; UI degrades silently.
+	relPoll := release.New(cfg.Install.ReleaseRepoURL, 0, log.With("comp", "release"))
+	if relPoll != nil {
+		go relPoll.Run(rootCtx)
+	}
+	webSrv, err := web.NewServer(st, hr, loop, relPoll, auth, install, log.With("comp", "web"))
 	if err != nil {
 		log.Error("web init", "err", err)
 		os.Exit(2)
