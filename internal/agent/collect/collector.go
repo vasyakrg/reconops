@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -73,6 +74,47 @@ type Params map[string]string
 type Collector interface {
 	Manifest() Manifest
 	Run(ctx context.Context, p Params) (Result, error)
+}
+
+// Availabler is an optional interface a collector can implement to gate
+// itself on host capabilities (binary present, daemon socket reachable,
+// /proc entry exists, etc). Collectors that don't implement it are always
+// available — no implicit gate.
+//
+// The agent calls Available() exactly once, at startup right after every
+// init() has populated the registry. Collectors returning false are
+// permanently unregistered for the lifetime of this agent process — they
+// never appear in the Hello manifest list, so the LLM investigator never
+// sees them as candidates and can't waste a probe step.
+//
+// Re-checks on a long-lived agent are out of scope: if docker is installed
+// after the agent started, restart the agent. The alternative (poll-and-
+// re-advertise) adds non-trivial protocol churn for a rare ops event.
+type Availabler interface {
+	Available() bool
+}
+
+// PruneUnavailable walks the registry, calls Available() on every
+// collector that implements Availabler, and removes those returning false.
+// Returns the names that were dropped (sorted, for stable logging).
+// Idempotent — safe to call multiple times. Intended to be called once
+// from cmd/agent/main.go after exec.RegisterDefaults().
+func PruneUnavailable() []string {
+	mu.Lock()
+	defer mu.Unlock()
+	dropped := make([]string, 0)
+	for name, c := range registry {
+		a, ok := c.(Availabler)
+		if !ok {
+			continue
+		}
+		if !a.Available() {
+			delete(registry, name)
+			dropped = append(dropped, name)
+		}
+	}
+	sort.Strings(dropped)
+	return dropped
 }
 
 var (

@@ -102,6 +102,28 @@ func Register(e Entry) {
 // resolved at Register time.
 var ErrBinaryNotFound = errors.New("exec: no candidate path for binary exists on this host")
 
+// BinaryAvailable reports whether `bin` was registered AND its candidate
+// path resolved at Register time. Used by collectors' optional Available()
+// method (collect.Availabler) to gate themselves on host capabilities —
+// e.g. docker_ps returns false on hosts where the docker binary is absent,
+// so the collector is pruned from the registry and never advertised to
+// the LLM. Returns false for an unknown binary.
+func BinaryAvailable(bin string) bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	e, ok := whitelist[bin]
+	if !ok {
+		return false
+	}
+	if len(e.Candidates) == 0 {
+		// Bare Bin (no candidates) is treated as "always present" — caller
+		// supplied an absolute path; if it's not there at exec time, Run
+		// returns an error rather than panicking.
+		return true
+	}
+	return e.resolved != ""
+}
+
 // Result captures stdout, stderr, and exit code of a permitted invocation.
 type Result struct {
 	Stdout   []byte

@@ -13,6 +13,11 @@ func init() { collect.Register(&systemdUnits{}) }
 
 type systemdUnits struct{}
 
+// Hosts without systemd (alpine BusyBox, openrc, runit, ...) have no
+// systemctl binary — pruning here avoids the LLM proposing systemd_units
+// against an init system that doesn't speak it.
+func (systemdUnits) Available() bool { return exec.BinaryAvailable("systemctl") }
+
 type Unit struct {
 	Unit        string `json:"unit"`
 	Load        string `json:"load"`

@@ -35,6 +35,15 @@ func init() {
 	collect.Register(&dockerLogs{})
 }
 
+// dockerAvailable returns true iff the docker binary resolved on this host.
+// All three collectors below share it; if docker isn't installed the agent
+// prunes them at startup so the LLM never tries to ps/inspect/logs nothing.
+func dockerAvailable() bool { return exec.BinaryAvailable("docker") }
+
+func (dockerPS) Available() bool      { return dockerAvailable() }
+func (dockerInspect) Available() bool { return dockerAvailable() }
+func (dockerLogs) Available() bool    { return dockerAvailable() }
+
 // ── docker_ps ────────────────────────────────────────────────────────────────
 
 type dockerPS struct{}

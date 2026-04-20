@@ -16,6 +16,8 @@ func init() { collect.Register(&journalTail{}) }
 
 type journalTail struct{}
 
+func (journalTail) Available() bool { return exec.BinaryAvailable("journalctl") }
+
 // JournalEntry is the small subset of fields we surface in the summary;
 // the full per-line records go into the artifact body.
 type JournalEntry struct {

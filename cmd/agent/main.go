@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/vasyakrg/recon/internal/agent/collect"
 	_ "github.com/vasyakrg/recon/internal/agent/collectors/container" // register docker_*
 	_ "github.com/vasyakrg/recon/internal/agent/collectors/files"     // register file_read, disk_usage
 	_ "github.com/vasyakrg/recon/internal/agent/collectors/k8s"       // register kubectl_*
@@ -40,6 +41,17 @@ func main() {
 	// (PROJECT.md §3.4 layer 3); the agent runner recovers and reports
 	// STATUS_ERROR — agent stays up.
 	exec.RegisterDefaults()
+
+	// Capability-prune the collector registry: any collector implementing
+	// collect.Availabler whose Available() returns false (typically because
+	// the host is missing a required binary like docker / kubectl / systemctl)
+	// is dropped here. This keeps the manifest list the agent advertises in
+	// Hello — and therefore the tool catalog the LLM investigator sees —
+	// limited to collectors that can actually run on this host. Saves the
+	// model from proposing dead-end probes.
+	if dropped := collect.PruneUnavailable(); len(dropped) > 0 {
+		log.Info("collectors pruned (unavailable on this host)", "names", dropped)
+	}
 
 	cfg, err := conn.LoadConfig(*cfgPath)
 	if err != nil {

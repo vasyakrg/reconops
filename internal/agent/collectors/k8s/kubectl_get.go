@@ -22,6 +22,15 @@ func init() {
 	collect.Register(&kubectlLogs{})
 }
 
+// kubectlAvailable gates all three kubectl_* collectors. On a host without
+// kubectl, the LLM never sees them as candidates — saves a round-trip and
+// a confusing "no such file" error message.
+func kubectlAvailable() bool { return exec.BinaryAvailable("kubectl") }
+
+func (kubectlGet) Available() bool      { return kubectlAvailable() }
+func (kubectlDescribe) Available() bool { return kubectlAvailable() }
+func (kubectlLogs) Available() bool     { return kubectlAvailable() }
+
 // paramInt parses an optional integer param from the stringly-typed map.
 func paramInt(p collect.Params, key string, fallback, max int) int {
 	v, ok := p[key]
