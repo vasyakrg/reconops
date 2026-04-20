@@ -10,11 +10,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	_ "github.com/vasyakrg/recon/internal/agent/collectors/files"   // register file_read, disk_usage
-	_ "github.com/vasyakrg/recon/internal/agent/collectors/net"     // register net_*
-	_ "github.com/vasyakrg/recon/internal/agent/collectors/process" // register process_list
-	_ "github.com/vasyakrg/recon/internal/agent/collectors/system"  // register system_info
-	_ "github.com/vasyakrg/recon/internal/agent/collectors/systemd" // register systemd_units, journal_tail
+	_ "github.com/vasyakrg/recon/internal/agent/collectors/container" // register docker_*
+	_ "github.com/vasyakrg/recon/internal/agent/collectors/files"     // register file_read, disk_usage
+	_ "github.com/vasyakrg/recon/internal/agent/collectors/k8s"       // register kubectl_*
+	_ "github.com/vasyakrg/recon/internal/agent/collectors/net"       // register net_*
+	_ "github.com/vasyakrg/recon/internal/agent/collectors/process"   // register process_list
+	_ "github.com/vasyakrg/recon/internal/agent/collectors/system"    // register system_info
+	_ "github.com/vasyakrg/recon/internal/agent/collectors/systemd"   // register systemd_units, journal_tail
 	"github.com/vasyakrg/recon/internal/agent/conn"
 	"github.com/vasyakrg/recon/internal/agent/exec"
 	"github.com/vasyakrg/recon/internal/common/version"

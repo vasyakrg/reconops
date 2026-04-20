@@ -31,6 +31,12 @@ type Investigation struct {
 	// hub.yaml was hit — additive on top of (max_steps, max_tokens).
 	ExtraSteps  int
 	ExtraTokens int
+	// AutoApprove: when true, every operator-gated tool_call (collect,
+	// collect_batch, add_finding, search_artifact, get_full_result,
+	// compare_across_hosts, mark_done, ask_operator) is auto-approved
+	// without operator click. Toggleable per-investigation from the
+	// detail page.
+	AutoApprove bool
 }
 
 type Message struct {
@@ -94,15 +100,17 @@ func (s *Store) InsertInvestigation(ctx context.Context, inv Investigation) erro
 func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation, error) {
 	var inv Investigation
 	var allowed sql.NullString
+	var auto int
 	err := s.db.QueryRowContext(ctx, `
         SELECT id, goal, status, created_by, created_at, updated_at, model, base_url,
                total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json,
-               allowed_hosts_json, extra_steps, extra_tokens
+               allowed_hosts_json, extra_steps, extra_tokens, auto_approve
           FROM investigations WHERE id=?`, id).
 		Scan(&inv.ID, &inv.Goal, &inv.Status, &inv.CreatedBy, &inv.CreatedAt, &inv.UpdatedAt,
 			&inv.Model, &inv.BaseURL,
 			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON,
-			&allowed, &inv.ExtraSteps, &inv.ExtraTokens)
+			&allowed, &inv.ExtraSteps, &inv.ExtraTokens, &auto)
+	inv.AutoApprove = auto == 1
 	if errors.Is(err, sql.ErrNoRows) {
 		return Investigation{}, fmt.Errorf("investigation %s not found", id)
 	}
@@ -110,6 +118,18 @@ func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation,
 		_ = json.Unmarshal([]byte(allowed.String), &inv.AllowedHosts)
 	}
 	return inv, err
+}
+
+// SetAutoApprove flips the per-investigation auto-approve toggle.
+func (s *Store) SetAutoApprove(ctx context.Context, id string, on bool) error {
+	v := 0
+	if on {
+		v = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET auto_approve = ?, updated_at = ? WHERE id = ?`,
+		v, time.Now().UTC(), id)
+	return err
 }
 
 // ExtendBudget bumps the per-investigation extras and flips status back to

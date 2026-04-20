@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +71,7 @@ func (l *Loop) Info() (model, baseURL string) {
 	if l == nil || l.llm == nil {
 		return "", ""
 	}
-	return l.llm.Model(), ""
+	return l.llm.Model(), l.llm.BaseURL()
 }
 
 // Start creates a new investigation row, persists the system prompt + user
@@ -646,9 +647,18 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 		}
 	}
 
+	// (termination forcing) If the latest executed tool_call in this
+	// investigation is a load-bearing add_finding (severity ≥ warn, ≥2
+	// evidence_refs), strip all probe tools from the offered list so the
+	// model can only pick mark_done / ask_operator / add_finding on this
+	// turn. Prompt rule 9 declares the same; the filter is the hard guard.
+	offered := Tools()
+	if l.postFindingRestricted(ctx, inv.ID) {
+		offered = filterTools(offered, postFindingAllowedTools)
+	}
 	resp, err := l.llm.Chat(ctx, llm.ChatRequest{
 		Messages:    pbMsgs,
-		Tools:       Tools(),
+		Tools:       offered,
 		ToolChoice:  "required",
 		Temperature: 0,
 		MaxTokens:   4096,
@@ -699,8 +709,10 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 
 	// Persist as pending. Auto-tools (no host-touch, no findings, no
 	// finalize) are pre-approved so the operator does not have to click
-	// through trivial discovery steps.
-	autoApprove := isAutoTool(first.Function.Name)
+	// through trivial discovery steps. The per-investigation auto_approve
+	// toggle additionally pre-approves every operator-gated call — opt-in
+	// for low-risk runs the operator wants to babysit only at the start.
+	autoApprove := isAutoTool(first.Function.Name) || inv.AutoApprove
 	status := "pending"
 	if autoApprove {
 		status = "approved"
@@ -744,6 +756,14 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 	taskID := ""
 	switch tc.Tool {
 	case "collect":
+		if synth, blocked := l.preflightCollect(ctx, investigationID, tc); blocked {
+			result = synth
+			break
+		}
+		if synth, blocked := l.preflightCollectEconomy(ctx, investigationID, tc); blocked {
+			result = synth
+			break
+		}
 		exec, err := PrepareCollect(ctx, env, tc.InputJSON)
 		if err != nil {
 			result = errResult(err)
@@ -771,6 +791,14 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 				return err
 			}
 			return nil
+		}
+		if synth, blocked := l.preflightCollect(ctx, investigationID, tc); blocked {
+			result = synth
+			break
+		}
+		if synth, blocked := l.preflightCollectEconomy(ctx, investigationID, tc); blocked {
+			result = synth
+			break
 		}
 		exec, err := PrepareCollectBatch(ctx, env, tc.InputJSON)
 		if err != nil {
@@ -804,8 +832,194 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 		_ = l.store.FinishInvestigation(ctx, investigationID, "done", string(args.Summary))
 	case "ask_operator":
 		_ = l.store.UpdateInvestigationStatus(ctx, investigationID, "waiting")
+	case "add_finding":
+		// (termination forcing) After a load-bearing finding, inject a
+		// system_note that tells the model — on the SAME turn the prompt
+		// does — that probes are done. The callLLM-side Tools filter
+		// enforces it; this note is the explanation the model needs so
+		// its own reasoning converges on mark_done instead of retrying.
+		if result.OK && isLoadBearingFindingInput(tc.InputJSON) {
+			_, _ = l.store.AppendMessage(ctx, store.Message{
+				InvestigationID: investigationID, Role: "system_note",
+				Content: "A load-bearing finding was just recorded " +
+					"(severity ≥ warn, ≥2 evidence_refs). Per rule 9, " +
+					"your next tool_call MUST be mark_done OR ask_operator. " +
+					"Further probes (collect, collect_batch, get_full_result, " +
+					"search_artifact, compare_across_hosts, describe_collector) " +
+					"are disabled until you terminate or ask. If root cause " +
+					"is established, call mark_done now with the full summary.",
+			})
+		}
 	}
 	return nil
+}
+
+// isLoadBearingFindingInput parses an add_finding tool input and returns
+// true when severity is warn|error AND evidence_refs has at least 2 entries.
+// Matches the restriction logic in postFindingRestricted (restrict.go).
+func isLoadBearingFindingInput(inputJSON string) bool {
+	var a struct {
+		Severity     string   `json:"severity"`
+		EvidenceRefs []string `json:"evidence_refs"`
+	}
+	if err := json.Unmarshal([]byte(inputJSON), &a); err != nil {
+		return false
+	}
+	if a.Severity != "warn" && a.Severity != "error" {
+		return false
+	}
+	return len(a.EvidenceRefs) >= 2
+}
+
+// preflightCollectEconomy runs AFTER preflightCollect (restrict.go) and
+// short-circuits the execution when:
+//   - dedup: an identical (tool, canonicalized-input) was already executed
+//     in this investigation. The model must re-use the prior task_id via
+//     get_full_result rather than re-run the same collector.
+//   - retry_cap: a (collector, host_id) pair has already failed ≥2 times
+//     in this investigation. The model must change approach.
+//
+// Returns (synthetic ToolResult, true) when blocked; (_, false) to proceed.
+func (l *Loop) preflightCollectEconomy(ctx context.Context, investigationID string, tc *store.ToolCallRow) (ToolResult, bool) {
+	tcs, err := l.store.ListToolCalls(ctx, investigationID)
+	if err != nil {
+		return ToolResult{}, false
+	}
+	curSig := canonCollectInput(tc.InputJSON)
+
+	// Dedup: identical previously-executed call.
+	if curSig != "" {
+		for _, h := range tcs {
+			if h.ID == tc.ID || h.Tool != tc.Tool {
+				continue
+			}
+			if h.Status != "executed" {
+				continue
+			}
+			if canonCollectInput(h.InputJSON) != curSig {
+				continue
+			}
+			priorTaskID := ""
+			if h.TaskID.Valid {
+				priorTaskID = h.TaskID.String
+			}
+			return errResult(fmt.Errorf(
+				"dedup: identical %s call already executed as tool_call %s (task_id=%q); "+
+					"do NOT re-run the same collector with the same params — use get_full_result on the prior task_id, "+
+					"or change the approach",
+				tc.Tool, h.ID, priorTaskID)), true
+		}
+	}
+
+	// Retry-cap: reject if any proposed (collector, host_id) pair has already
+	// failed ≥ 2 times in this investigation.
+	proposed := proposedCollectPairs(tc.InputJSON)
+	if len(proposed) == 0 {
+		return ToolResult{}, false
+	}
+	fails := countCollectFailures(tcs)
+	for _, key := range proposed {
+		if n, ok := fails[key]; ok && n >= 2 {
+			return errResult(fmt.Errorf(
+				"retry_cap: (%s) has already failed %d times in this investigation; "+
+					"change the collector or the approach, or call ask_operator — do not retry",
+				key, n)), true
+		}
+	}
+	return ToolResult{}, false
+}
+
+// canonCollectInput returns a canonical JSON string for a collect /
+// collect_batch input: map keys sorted by json.Marshal, host_ids deduped
+// and sorted, so "same call in a different order" still dedups cleanly.
+func canonCollectInput(inputJSON string) string {
+	var v map[string]any
+	if err := json.Unmarshal([]byte(inputJSON), &v); err != nil {
+		return ""
+	}
+	if raw, ok := v["host_ids"].([]any); ok {
+		strs := make([]string, 0, len(raw))
+		seen := map[string]bool{}
+		for _, h := range raw {
+			s, ok := h.(string)
+			if !ok || seen[s] {
+				continue
+			}
+			seen[s] = true
+			strs = append(strs, s)
+		}
+		sort.Strings(strs)
+		out := make([]any, len(strs))
+		for i, s := range strs {
+			out[i] = s
+		}
+		v["host_ids"] = out
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// proposedCollectPairs extracts the (collector, host_id) pairs a collect /
+// collect_batch call would hit. Returns "" entries filtered out.
+func proposedCollectPairs(inputJSON string) []string {
+	var a struct {
+		Collector string   `json:"collector"`
+		HostID    string   `json:"host_id"`
+		HostIDs   []string `json:"host_ids"`
+	}
+	if err := json.Unmarshal([]byte(inputJSON), &a); err != nil {
+		return nil
+	}
+	if a.Collector == "" {
+		return nil
+	}
+	out := []string{}
+	if a.HostID != "" {
+		out = append(out, a.Collector+"|"+a.HostID)
+	}
+	for _, h := range a.HostIDs {
+		if h != "" {
+			out = append(out, a.Collector+"|"+h)
+		}
+	}
+	return out
+}
+
+// countCollectFailures walks executed collect / collect_batch tool_calls and
+// tallies failures per (collector, host_id). A "failure" is a per-host task
+// with status in {error, timeout}. The top-level tool_call may be OK while
+// individual per-host tasks failed — we look inside result.data.tasks[].
+func countCollectFailures(tcs []store.ToolCallRow) map[string]int {
+	out := map[string]int{}
+	for _, tc := range tcs {
+		if tc.Tool != "collect" && tc.Tool != "collect_batch" {
+			continue
+		}
+		if tc.Status != "executed" || !tc.ResultJSON.Valid {
+			continue
+		}
+		var r struct {
+			Data struct {
+				Tasks []struct {
+					Collector string `json:"collector"`
+					HostID    string `json:"host_id"`
+					Status    string `json:"status"`
+				} `json:"tasks"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(tc.ResultJSON.String), &r); err != nil {
+			continue
+		}
+		for _, t := range r.Data.Tasks {
+			if t.Status == "error" || t.Status == "timeout" {
+				out[t.Collector+"|"+t.HostID]++
+			}
+		}
+	}
+	return out
 }
 
 // lastApproved returns the most recent tool_call with status='approved',

@@ -33,7 +33,7 @@
       <div style="padding:12px 14px">
         <div style="display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-family:var(--font-mono);font-size:11.5px">
           <span class="muted">host_id</span><span style="color:var(--fg-0);word-break:break-all">{{.Host.ID}}</span>
-          {{with index .Host.Facts "primary_ip"}}<span class="muted">ip</span><span style="color:var(--fg-0)">{{.}}</span>{{end}}
+          {{with index .Host.Facts "primary_ip"}}<span class="muted">ip</span><span class="copyable" data-copy="{{.}}" title="click to copy" style="color:var(--fg-0)">{{.}}</span>{{end}}
           {{with index .Host.Facts "cpu_count"}}<span class="muted">cpu</span><span style="color:var(--fg-0)">{{.}}</span>{{end}}
           {{with index .Host.Facts "ram_gb"}}<span class="muted">ram</span><span style="color:var(--fg-0)">{{.}}G</span>{{end}}
           {{with index .Host.Facts "os"}}<span class="muted">os</span><span style="color:var(--fg-0)">{{.}}</span>{{end}}

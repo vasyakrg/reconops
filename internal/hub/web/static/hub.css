@@ -521,6 +521,20 @@ details[open] summary { color: var(--fg-0); }
 /* ============================================================ helpers */
 .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* click-to-copy spans (IPs, fingerprints, etc.) — subtle dotted underline,
+   green flash on success, no behaviour change on browsers without
+   navigator.clipboard. */
+.copyable {
+  cursor: pointer;
+  border-bottom: 1px dotted var(--border-hi);
+  transition: color 120ms;
+}
+.copyable:hover { color: var(--accent); }
+.copyable.copied {
+  color: var(--ok);
+  border-bottom-color: var(--ok);
+}
+
 /* ============================================================ Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

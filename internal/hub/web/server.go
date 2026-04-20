@@ -181,6 +181,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/investigations/hypothesis", auth(s.handleHypothesis))
 	mux.HandleFunc("/investigations/extend", auth(s.handleInvestigationExtend))
 	mux.HandleFunc("/investigations/finalize", auth(s.handleInvestigationFinalize))
+	mux.HandleFunc("/investigations/auto-approve", auth(s.handleInvestigationAutoApprove))
 	mux.HandleFunc("/findings/", auth(s.handleFindingAction))
 	mux.HandleFunc("/investigations/export/", auth(s.handleInvestigationExport))
 	mux.HandleFunc("/investigations/events/", auth(s.handleInvestigationSSE))
@@ -471,10 +472,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
 		issued = s.sessions.popFlash(sid.Value, "issued_token")
 	}
-	model := ""
+	model, baseURL := "", ""
 	maxSteps, maxTokens := 0, 0
 	if s.loop != nil {
-		model, _ = s.loop.Info()
+		model, baseURL = s.loop.Info()
 		maxSteps, maxTokens = s.loop.Budgets()
 	}
 	tokens, _ := s.store.ListBootstrapTokens(r.Context(), 50)
@@ -483,6 +484,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"Hosts":     hosts,
 		"Issued":    issued,
 		"Model":     model,
+		"BaseURL":   baseURL,
 		"MaxSteps":  maxSteps,
 		"MaxTokens": maxTokens,
 		"AdminUser": s.auth.Username,
@@ -1106,6 +1108,36 @@ func (s *Server) handleInvestigationFinalize(w http.ResponseWriter, r *http.Requ
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
+}
+
+// handleInvestigationAutoApprove flips the per-investigation auto_approve
+// toggle. Form fields: investigation_id, on=1|0. When toggled on with a
+// pending tool_call already on the timeline we DO NOT auto-execute it —
+// operator decides on the in-flight one explicitly; auto-approval applies
+// only to subsequent calls.
+func (s *Server) handleInvestigationAutoApprove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("investigation_id")
+	if id == "" {
+		http.Error(w, "investigation_id required", http.StatusBadRequest)
+		return
+	}
+	on := r.FormValue("on") == "1"
+	if err := s.store.SetAutoApprove(r.Context(), id, on); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r.Context(), authedUser(r), "investigation.auto_approve",
+		map[string]any{"investigation_id": id, "on": on})
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }
 

@@ -62,7 +62,7 @@
           {{range $k, $v := .Labels}}<span class="chip"><span class="k">{{$k}}</span><span class="muted">=</span><span class="v">{{$v}}</span></span>{{end}}
         </div>
       </td>
-      <td class="mono" style="color:var(--fg-1)">{{index .Facts "primary_ip"}}</td>
+      <td class="mono" style="color:var(--fg-1)">{{with index .Facts "primary_ip"}}<span class="copyable" data-copy="{{.}}" title="click to copy">{{.}}</span>{{end}}</td>
       <td class="mono muted" style="font-size:11px">{{index .Facts "os"}}{{if index .Facts "arch"}} {{index .Facts "arch"}}{{end}}{{with index .Facts "kernel"}}<br><span style="font-size:10.5px">{{.}}</span>{{end}}</td>
       <td class="mono" style="color:var(--fg-1)">{{index .Facts "cpu_count"}}</td>
       <td class="mono" style="color:var(--fg-1)">{{with index .Facts "ram_gb"}}{{.}}G{{end}}</td>

@@ -26,6 +26,19 @@
       <span class="mono" style="color:var(--fg-0)">{{compactNum .UsedTokens}}/{{compactNum .MaxTokens}}</span>
       <div class="pbar {{if ge .TokensPct 90}}err{{else if ge .TokensPct 70}}warn{{end}}"><span style="width:{{.TokensPct}}%"></span></div>
     </div>
+    {{if and (ne .Inv.Status "done") (ne .Inv.Status "aborted")}}
+    <form method="post" action="/investigations/auto-approve" style="margin:0">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+      {{if .Inv.AutoApprove}}
+      <input type="hidden" name="on" value="0">
+      <button class="btn sm" type="submit" title="Stop auto-approving — every next tool_call waits for your click again" style="background:var(--accent-bg);border-color:var(--accent);color:var(--accent)">⚡ auto · on</button>
+      {{else}}
+      <input type="hidden" name="on" value="1">
+      <button class="btn sm ghost" type="submit" title="Auto-approve every subsequent tool_call in this investigation">⚡ auto · off</button>
+      {{end}}
+    </form>
+    {{end}}
     <a class="btn sm ghost" href="/investigations/export/{{.Inv.ID}}">Export .md</a>
   </div>
 </header>

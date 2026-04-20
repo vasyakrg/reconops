@@ -5,6 +5,21 @@
 (function () {
   'use strict';
 
+  // Click-to-copy for any element with a [data-copy] attribute.
+  // Copies data-copy to clipboard, flashes "copied" class for 1.2s.
+  // Falls back to nothing on browsers without navigator.clipboard
+  // (rare; spec-stable since 2018).
+  document.addEventListener('click', function (ev) {
+    var el = ev.target.closest('[data-copy]');
+    if (!el) return;
+    var val = el.getAttribute('data-copy');
+    if (!val || !navigator.clipboard) return;
+    navigator.clipboard.writeText(val).then(function () {
+      el.classList.add('copied');
+      setTimeout(function () { el.classList.remove('copied'); }, 1200);
+    });
+  });
+
   // Highlight the sidebar nav item that matches the current pathname.
   // Each nav-item carries data-nav="<key>"; layout.html sets data-active on
   // <body> so server can also mark it, but this catches client-side route

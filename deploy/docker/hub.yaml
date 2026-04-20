@@ -23,7 +23,7 @@ llm:
   base_url: https://openrouter.ai/api/v1
   model: anthropic/claude-sonnet-4.5
   api_key_env: RECON_LLM_API_KEY
-  max_steps_per_investigation: 40
+  max_steps_per_investigation: 12
   max_tokens_per_investigation: 500000
 
 runner:

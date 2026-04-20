@@ -172,6 +172,73 @@ func RegisterDefaults() {
 			},
 		},
 	})
+
+	// docker — read-only inspection only. Listing, single-container detail,
+	// and bounded log tail. No --no-trunc on ps/inspect because the JSON
+	// output is fixed-format anyway. CLI never passed user-controlled
+	// metacharacters; container_id / name validated as "no shell meta".
+	Register(Entry{
+		Bin:            "docker",
+		Candidates:     []string{"/usr/bin/docker", "/usr/local/bin/docker", "/snap/bin/docker"},
+		Timeout:        15 * time.Second,
+		MaxStdoutBytes: 8 * 1024 * 1024,
+		Patterns: [][]ArgSpec{
+			// docker ps -a --no-trunc --format '{{json .}}'
+			{
+				{Value: literal("ps")}, {Value: literal("-a")},
+				{Value: literal("--no-trunc")},
+				{Value: literal("--format")}, {Value: literal("{{json .}}")},
+			},
+			// docker inspect <id-or-name>
+			{
+				{Value: literal("inspect")}, {Value: NoShellMeta},
+			},
+			// docker logs --tail <N> --timestamps <id-or-name>
+			{
+				{Value: literal("logs")},
+				{Value: literal("--tail")}, {Value: PosInt(10000)},
+				{Value: literal("--timestamps")},
+				{Value: NoShellMeta},
+			},
+		},
+	})
+
+	// kubectl — read-only resource listing + describe + log tail. The
+	// agent uses the host's kubeconfig (typically /root/.kube/config or
+	// /etc/kubernetes/admin.conf, mounted on the agent host); no creds
+	// land in the agent itself.
+	Register(Entry{
+		Bin:            "kubectl",
+		Candidates:     []string{"/usr/bin/kubectl", "/usr/local/bin/kubectl", "/snap/bin/kubectl"},
+		Timeout:        20 * time.Second,
+		MaxStdoutBytes: 16 * 1024 * 1024,
+		Patterns: [][]ArgSpec{
+			// kubectl get <resource> -A -o json
+			{
+				{Value: literal("get")}, {Value: NoShellMeta},
+				{Value: literal("-A")},
+				{Value: literal("-o")}, {Value: literal("json")},
+			},
+			// kubectl get <resource> -n <ns> -o json
+			{
+				{Value: literal("get")}, {Value: NoShellMeta},
+				{Value: literal("-n")}, {Value: NoShellMeta},
+				{Value: literal("-o")}, {Value: literal("json")},
+			},
+			// kubectl describe <resource> <name> -n <ns>
+			{
+				{Value: literal("describe")}, {Value: NoShellMeta}, {Value: NoShellMeta},
+				{Value: literal("-n")}, {Value: NoShellMeta},
+			},
+			// kubectl logs <pod> -n <ns> --tail <N> --timestamps
+			{
+				{Value: literal("logs")}, {Value: NoShellMeta},
+				{Value: literal("-n")}, {Value: NoShellMeta},
+				{Value: literal("--tail")}, {Value: PosInt(10000)},
+				{Value: literal("--timestamps")},
+			},
+		},
+	})
 }
 
 func literal(want any) func(string) error {

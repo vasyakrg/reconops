@@ -97,7 +97,8 @@ func NewFromEnv(baseURL, model, envName, referer, title string) (*Client, error)
 	})
 }
 
-func (c *Client) Model() string { return c.model }
+func (c *Client) Model() string   { return c.model }
+func (c *Client) BaseURL() string { return c.baseURL }
 
 // ChatRequest is the OpenAI-compatible chat/completions request shape.
 type ChatRequest struct {

@@ -135,7 +135,10 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.LLM.APIKeyEnv = "RECON_LLM_API_KEY"
 	}
 	if cfg.LLM.MaxStepsPerInvestigation == 0 {
-		cfg.LLM.MaxStepsPerInvestigation = 40
+		// (accuracy) 12 is a forcing function: investigations that cannot
+		// terminate within 12 tool_calls usually stopped being productive
+		// a while ago. Operators can always click "extend" to buy more.
+		cfg.LLM.MaxStepsPerInvestigation = 12
 	}
 	if cfg.LLM.MaxTokensPerInvestigation == 0 {
 		cfg.LLM.MaxTokensPerInvestigation = 500_000

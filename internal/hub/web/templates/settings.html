@@ -21,8 +21,8 @@
       <div class="panel-hd"><span>LLM endpoint</span></div>
       <div style="padding:14px;display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-family:var(--font-mono);font-size:12px">
         <span class="muted">model</span><span style="color:var(--fg-0)">{{if .Model}}{{.Model}}{{else}}<span class="hint-error">disabled</span>{{end}}</span>
-        <span class="muted">base_url</span><span style="color:var(--fg-1)">RECON_LLM_BASE_URL</span>
-        <span class="muted">api_key</span><span style="color:var(--fg-1)">RECON_LLM_API_KEY (env)</span>
+        <span class="muted">base_url</span><span style="color:var(--fg-0);word-break:break-all">{{if .BaseURL}}{{.BaseURL}}{{else}}<span class="dim">—</span>{{end}}</span>
+        <span class="muted">api_key</span><span style="color:var(--fg-1)">env <span class="mono dim">RECON_LLM_API_KEY</span></span>
         <span class="muted">temperature</span><span style="color:var(--fg-0)">0.0</span>
         <span class="muted">tool_choice</span><span style="color:var(--fg-0)">required</span>
       </div>
