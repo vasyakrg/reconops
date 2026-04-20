@@ -13,13 +13,15 @@ func Full() string {
 
 // Outdated reports whether `current` is strictly below `latest` using a
 // loose semver comparison (vMAJOR.MINOR.PATCH; suffixes ignored). Empty
-// or "dev" builds return false so a developer running an unstamped binary
-// is never flagged as outdated against an official tag.
+// or all-zero builds return false so a developer running a brand-new
+// repo with no tags is never flagged as outdated. Dev builds with a
+// real-looking version string (e.g. "0.1.7-dirty") DO get compared —
+// the version stamp from `git describe` is the source of truth.
 func Outdated(current, latest string) bool {
 	if current == "" || latest == "" {
 		return false
 	}
-	if strings.HasPrefix(current, "0.0.0") || strings.Contains(current, "dev") {
+	if strings.HasPrefix(current, "0.0.0") {
 		return false
 	}
 	return compareSemver(current, latest) < 0

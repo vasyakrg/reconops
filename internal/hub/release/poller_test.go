@@ -36,7 +36,8 @@ func TestOutdated(t *testing.T) {
 		{"v0.1.4-rc1", "v0.1.4", false},
 		{"", "v0.1.4", false},
 		{"v0.1.4", "", false},
-		{"0.1.0-dev+abc", "v0.1.4", false}, // dev build → not flagged
+		{"0.1.0-dev+abc", "v0.1.4", true}, // dev build with real version → flagged
+		{"0.0.0-foo", "v0.1.4", false},    // no-tag dev → not flagged
 		{"v1.0.0", "v2.0.0", true},
 	}
 	for _, c := range cases {

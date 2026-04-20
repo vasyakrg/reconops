@@ -12,7 +12,14 @@ AGENT_BIN := $(BIN_DIR)/recon-agent
 PROTO_DIR := internal/proto
 PROTO_SRC := $(PROTO_DIR)/recon.proto
 
-LDFLAGS := -s -w -X 'github.com/vasyakrg/recon/internal/common/version.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo dev)'
+# DIST_VER is set by the release workflow (extracted from the git tag, no
+# leading "v") and read by the dist-* targets. Local `make build` falls back
+# to `git describe --tags` so dev binaries still report a meaningful version
+# in --version output and the hub's outdated check doesn't blanket-skip them.
+DIST_VER ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo 0.1.0-dev)
+LDFLAGS := -s -w \
+  -X 'github.com/vasyakrg/recon/internal/common/version.Version=$(DIST_VER)' \
+  -X 'github.com/vasyakrg/recon/internal/common/version.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo dev)'
 
 .PHONY: help
 help:
@@ -67,7 +74,6 @@ run-agent: build-agent ## Run agent locally
 dist: dist-hub dist-agent ## Build static dist tarballs (linux/amd64 + arm64)
 
 DIST_DIR := dist
-DIST_VER := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: dist-hub
 # Tarball is named WITHOUT the version (recon-hub-linux-<arch>.tar.gz).

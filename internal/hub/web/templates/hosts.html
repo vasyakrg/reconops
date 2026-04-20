@@ -6,7 +6,7 @@
   </div>
   <div class="actions">
     {{if .InstallEnabled}}
-    <a class="btn sm ghost" href="#quick-install">+ Quick install</a>
+    <button type="button" class="btn sm ghost" onclick="document.getElementById('quick-install-modal').style.display='flex';document.getElementById('qi-agent-id').focus()">+ Quick install</button>
     {{end}}
     <a class="btn sm ghost" href="/settings#tokens">+ Bootstrap token</a>
   </div>
@@ -24,18 +24,27 @@
 {{end}}
 
 {{if .InstallEnabled}}
-<form id="quick-install" method="post" action="/hosts/quick-install" class="panel" style="padding:12px 14px;margin-bottom:18px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <div style="flex:1;min-width:240px">
-    <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:4px">agent_id (must be unique per host)</label>
-    <input type="text" name="agent_id" required placeholder="prod-app-01" style="width:100%;font-family:var(--font-mono);font-size:12px">
-  </div>
-  <div style="width:90px">
-    <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:4px">TTL</label>
-    <input type="text" name="ttl" value="1h" style="width:100%;font-family:var(--font-mono);font-size:12px">
-  </div>
-  <button class="btn primary" type="submit">Generate install link</button>
-</form>
+<div id="quick-install-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center;padding:24px" onclick="if(event.target===this)this.style.display='none'">
+  <form method="post" action="/hosts/quick-install" class="card" style="max-width:560px;width:100%;background:var(--bg-1);border:1px solid var(--border-hi);padding:18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);font-weight:600">Quick install — issue bootstrap token</div>
+      <button type="button" class="btn xs ghost" onclick="document.getElementById('quick-install-modal').style.display='none'">close</button>
+    </div>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div style="margin-bottom:10px">
+      <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:4px">agent_id (must be unique per host)</label>
+      <input id="qi-agent-id" type="text" name="agent_id" required placeholder="prod-app-01" style="width:100%;font-family:var(--font-mono);font-size:12px;padding:6px 8px">
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:4px">TTL</label>
+      <input type="text" name="ttl" value="1h" style="width:120px;font-family:var(--font-mono);font-size:12px;padding:6px 8px">
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn primary" type="submit">Generate install link</button>
+      <span class="dim" style="font-size:10.5px">One-shot token, shown once on the next page.</span>
+    </div>
+  </form>
+</div>
 {{end}}
 
 <div class="panel">
