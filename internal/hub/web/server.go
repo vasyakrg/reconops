@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -178,6 +179,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/investigations/new", auth(s.handleInvestigationsNew))
 	mux.HandleFunc("/investigations/decide", auth(s.handleInvestigationDecide))
 	mux.HandleFunc("/investigations/hypothesis", auth(s.handleHypothesis))
+	mux.HandleFunc("/investigations/extend", auth(s.handleInvestigationExtend))
+	mux.HandleFunc("/investigations/finalize", auth(s.handleInvestigationFinalize))
 	mux.HandleFunc("/findings/", auth(s.handleFindingAction))
 	mux.HandleFunc("/investigations/export/", auth(s.handleInvestigationExport))
 	mux.HandleFunc("/investigations/events/", auth(s.handleInvestigationSSE))
@@ -918,6 +921,10 @@ func (s *Server) handleInvestigationsDetail(w http.ResponseWriter, r *http.Reque
 	pending, _ := s.store.PendingToolCall(r.Context(), id)
 
 	maxSteps, maxTokens := s.budgets()
+	// Effective per-investigation cap = global default + per-inv extras the
+	// operator bought after a budget-exhausted pause.
+	maxSteps += inv.ExtraSteps
+	maxTokens += inv.ExtraTokens
 	usedTokens := inv.TotalPromptTokens + inv.TotalCompletionTokens
 	stepsPct := safePct(inv.TotalToolCalls, maxSteps)
 	tokensPct := safePct(usedTokens, maxTokens)
@@ -1027,6 +1034,78 @@ func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
 	}
 	s.audit(r.Context(), "operator", "investigation.hypothesis",
 		map[string]any{"investigation_id": id, "claim_chars": len(claim)})
+	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
+}
+
+// handleInvestigationExtend bumps the per-investigation budget extras and
+// resumes the paused loop. Form fields: investigation_id (required),
+// extra_steps (optional, default +5), extra_tokens (optional, default
+// +500_000). One click of "Add 500k tokens" → +500K with a small step
+// nudge so the model isn't immediately re-paused on step cap.
+func (s *Server) handleInvestigationExtend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.loop == nil {
+		http.Error(w, "investigator disabled", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("investigation_id")
+	if id == "" {
+		http.Error(w, "investigation_id required", http.StatusBadRequest)
+		return
+	}
+	extraSteps := 10
+	if v := r.FormValue("extra_steps"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 200 {
+			extraSteps = n
+		}
+	}
+	extraTokens := 500_000
+	if v := r.FormValue("extra_tokens"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 2_000_000 {
+			extraTokens = n
+		}
+	}
+	if err := s.loop.Extend(r.Context(), id, extraSteps, extraTokens, authedUser(r)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
+}
+
+// handleInvestigationFinalize tells the loop to emit a closing mark_done
+// with whatever evidence is on the timeline + "where to look next"
+// hypotheses, even though the budget is exhausted.
+func (s *Server) handleInvestigationFinalize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.loop == nil {
+		http.Error(w, "investigator disabled", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("investigation_id")
+	if id == "" {
+		http.Error(w, "investigation_id required", http.StatusBadRequest)
+		return
+	}
+	if err := s.loop.Finalize(r.Context(), id, authedUser(r)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	http.Redirect(w, r, "/investigations/"+id, http.StatusSeeOther)
 }
 

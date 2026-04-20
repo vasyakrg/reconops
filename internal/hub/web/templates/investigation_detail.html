@@ -8,6 +8,7 @@
     </div>
     {{if eq .Inv.Status "active"}}<span class="badge accent"><span class="dot info pulse" style="width:6px;height:6px"></span>active</span>
     {{else if eq .Inv.Status "waiting"}}<span class="badge pending"><span class="dot pending" style="width:6px;height:6px"></span>waiting</span>
+    {{else if eq .Inv.Status "paused"}}<span class="badge warn"><span class="dot warn pulse" style="width:6px;height:6px"></span>paused — budget</span>
     {{else if eq .Inv.Status "done"}}<span class="badge ok"><span class="dot ok" style="width:6px;height:6px"></span>done</span>
     {{else if eq .Inv.Status "aborted"}}<span class="badge err"><span class="dot err" style="width:6px;height:6px"></span>aborted</span>
     {{else}}<span class="badge"><span class="dot" style="width:6px;height:6px"></span>{{.Inv.Status}}</span>{{end}}
@@ -87,6 +88,29 @@
     </div>
     {{else if eq .Inv.Status "active"}}
     <div style="padding:14px 14px 10px;color:var(--fg-2);font-size:12px;font-style:italic">⏳ Waiting for the model — page will reload when the next step appears.</div>
+    {{else if eq .Inv.Status "paused"}}
+    <div style="padding:10px 12px 4px;background:var(--bg-0)">
+      <div class="card" style="border-color:color-mix(in oklab, var(--warn) 50%, var(--border));background:var(--warn-bg);padding:14px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--warn);font-weight:600;margin-bottom:6px">Budget exhausted — what next?</div>
+        <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55;margin-bottom:12px">
+          Used <span class="mono" style="color:var(--fg-0)">{{compactNum .UsedTokens}}</span> of <span class="mono" style="color:var(--fg-0)">{{compactNum .MaxTokens}}</span> tokens · <span class="mono" style="color:var(--fg-0)">{{.Inv.TotalToolCalls}}</span> of <span class="mono" style="color:var(--fg-0)">{{.MaxSteps}}</span> steps. The investigator paused — choose to keep digging or wrap up with what we've got.
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <form method="post" action="/investigations/extend" style="margin:0">
+            <input type="hidden" name="csrf" value="{{.CSRF}}">
+            <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+            <input type="hidden" name="extra_tokens" value="500000">
+            <input type="hidden" name="extra_steps" value="10">
+            <button class="btn primary" type="submit">+ 500k tokens · continue</button>
+          </form>
+          <form method="post" action="/investigations/finalize" style="margin:0">
+            <input type="hidden" name="csrf" value="{{.CSRF}}">
+            <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+            <button class="btn" type="submit">Stop · summarise + "look here next"</button>
+          </form>
+        </div>
+      </div>
+    </div>
     {{end}}
 
     <!-- Timeline rows -->

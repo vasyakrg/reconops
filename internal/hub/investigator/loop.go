@@ -235,6 +235,63 @@ func (l *Loop) DecideWithEdit(ctx context.Context, investigationID, decision, ne
 	return nil
 }
 
+// Extend bumps the per-investigation extra_steps / extra_tokens budget and
+// resumes the paused loop. Either delta can be 0; both default sensibly so
+// the operator typically clicks one button "+500K tokens" and we add a
+// matching nudge to the step cap.
+func (l *Loop) Extend(ctx context.Context, investigationID string, extraSteps, extraTokens int, decidedBy string) error {
+	if l == nil || l.llm == nil {
+		return errors.New("LLM disabled")
+	}
+	if extraSteps == 0 && extraTokens == 0 {
+		return errors.New("nothing to extend")
+	}
+	if err := l.store.ExtendBudget(ctx, investigationID, extraSteps, extraTokens); err != nil {
+		return err
+	}
+	_, _ = l.store.AppendMessage(ctx, store.Message{
+		InvestigationID: investigationID, Role: "system",
+		Content: fmt.Sprintf("BUDGET EXTENDED by operator: +%d steps, +%d tokens. Continue investigation.",
+			extraSteps, extraTokens),
+	})
+	_ = l.store.AuditLog(ctx, decidedBy, "investigation.extend",
+		map[string]any{"investigation_id": investigationID, "extra_steps": extraSteps, "extra_tokens": extraTokens})
+	l.spawn(investigationID)
+	return nil
+}
+
+// Finalize resumes a paused investigation with a hard prompt: emit mark_done
+// now using whatever evidence is on the timeline, marking confidence
+// honestly and listing "where to look next" hypotheses for the operator.
+// One more LLM turn happens; budget enforcement is bypassed for that turn
+// because we want a closing summary even when over-budget.
+func (l *Loop) Finalize(ctx context.Context, investigationID, decidedBy string) error {
+	if l == nil || l.llm == nil {
+		return errors.New("LLM disabled")
+	}
+	// Buy enough headroom for one final turn — picked generously so the
+	// model can't be re-paused mid-summary by a tight cap.
+	if err := l.store.ExtendBudget(ctx, investigationID, 5, 50_000); err != nil {
+		return err
+	}
+	_, _ = l.store.AppendMessage(ctx, store.Message{
+		InvestigationID: investigationID, Role: "user",
+		Content: "OPERATOR FINALIZE [priority: HIGH]\n" +
+			"Budget exhausted. Stop further investigation. Emit mark_done NOW with:\n" +
+			"  - root_cause: best current hypothesis (state confidence honestly: confirmed | likely | speculative)\n" +
+			"  - symptoms: what we directly observed\n" +
+			"  - evidence_refs: every task_id that supports the claim\n" +
+			"  - recommended_remediation: next concrete step the operator should take\n" +
+			"  - where_to_look_next: 2-4 hypotheses we did not have time to verify, " +
+			"with the specific collector / artifact path that would confirm or refute each.\n" +
+			"Do NOT propose more collect / search_artifact calls. Output mark_done as the very next tool_call.",
+	})
+	_ = l.store.AuditLog(ctx, decidedBy, "investigation.finalize",
+		map[string]any{"investigation_id": investigationID})
+	l.spawn(investigationID)
+	return nil
+}
+
 // InjectHypothesis discards the current pending tool_call (if any) and
 // appends an OPERATOR HYPOTHESIS user message; the loop is then resumed.
 // PROJECT.md §7.5: hypothesis is a directive, not a hint, and must
@@ -498,20 +555,33 @@ func (l *Loop) step(ctx context.Context, investigationID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if inv.Status == "done" || inv.Status == "aborted" {
+	if inv.Status == "done" || inv.Status == "aborted" || inv.Status == "paused" {
 		return false, nil
 	}
-	if inv.TotalToolCalls >= l.maxSteps {
-		_ = l.store.FinishInvestigation(ctx, investigationID, "aborted",
-			fmt.Sprintf(`{"reason":"max_steps_exceeded","budget":%d}`, l.maxSteps))
+	// Budget cap = global default + per-investigation extras the operator
+	// has bought. Hitting either pauses the loop instead of aborting —
+	// operator can extend by another slice or finalize with whatever
+	// evidence is on the timeline.
+	stepsCap := l.maxSteps + inv.ExtraSteps
+	tokensCap := l.maxTokens + inv.ExtraTokens
+	if inv.TotalToolCalls >= stepsCap {
+		_ = l.store.UpdateInvestigationStatus(ctx, investigationID, "paused")
+		_, _ = l.store.AppendMessage(ctx, store.Message{
+			InvestigationID: investigationID, Role: "system",
+			Content: fmt.Sprintf("BUDGET PAUSE: max_steps_exceeded (used=%d, cap=%d). Operator must extend or finalize.",
+				inv.TotalToolCalls, stepsCap),
+		})
 		return false, nil
 	}
 	// (review C2) Budget covers user-driven turns only — internal
 	// compaction calls are tracked separately in compaction_tokens.
-	if inv.TotalPromptTokens+inv.TotalCompletionTokens >= l.maxTokens {
-		_ = l.store.FinishInvestigation(ctx, investigationID, "aborted",
-			fmt.Sprintf(`{"reason":"max_tokens_exceeded","budget":%d,"compaction_tokens":%d}`,
-				l.maxTokens, inv.CompactionTokens))
+	if inv.TotalPromptTokens+inv.TotalCompletionTokens >= tokensCap {
+		_ = l.store.UpdateInvestigationStatus(ctx, investigationID, "paused")
+		_, _ = l.store.AppendMessage(ctx, store.Message{
+			InvestigationID: investigationID, Role: "system",
+			Content: fmt.Sprintf("BUDGET PAUSE: max_tokens_exceeded (used=%d, cap=%d, compaction=%d). Operator must extend or finalize.",
+				inv.TotalPromptTokens+inv.TotalCompletionTokens, tokensCap, inv.CompactionTokens),
+		})
 		return false, nil
 	}
 

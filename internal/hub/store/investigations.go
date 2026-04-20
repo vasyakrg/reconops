@@ -12,7 +12,7 @@ import (
 type Investigation struct {
 	ID                    string
 	Goal                  string
-	Status                string // active|waiting|done|aborted
+	Status                string // active|waiting|paused|done|aborted
 	CreatedBy             string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
@@ -27,6 +27,10 @@ type Investigation struct {
 	// list_hosts only surfaces these and collect/collect_batch reject any
 	// host_id outside the list.
 	AllowedHosts []string
+	// Budget extensions added by the operator after the global cap from
+	// hub.yaml was hit — additive on top of (max_steps, max_tokens).
+	ExtraSteps  int
+	ExtraTokens int
 }
 
 type Message struct {
@@ -93,12 +97,12 @@ func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation,
 	err := s.db.QueryRowContext(ctx, `
         SELECT id, goal, status, created_by, created_at, updated_at, model, base_url,
                total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json,
-               allowed_hosts_json
+               allowed_hosts_json, extra_steps, extra_tokens
           FROM investigations WHERE id=?`, id).
 		Scan(&inv.ID, &inv.Goal, &inv.Status, &inv.CreatedBy, &inv.CreatedAt, &inv.UpdatedAt,
 			&inv.Model, &inv.BaseURL,
 			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON,
-			&allowed)
+			&allowed, &inv.ExtraSteps, &inv.ExtraTokens)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Investigation{}, fmt.Errorf("investigation %s not found", id)
 	}
@@ -106,6 +110,20 @@ func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation,
 		_ = json.Unmarshal([]byte(allowed.String), &inv.AllowedHosts)
 	}
 	return inv, err
+}
+
+// ExtendBudget bumps the per-investigation extras and flips status back to
+// "active" so the loop resumes. Caller spawns the loop goroutine.
+func (s *Store) ExtendBudget(ctx context.Context, id string, extraSteps, extraTokens int) error {
+	_, err := s.db.ExecContext(ctx, `
+        UPDATE investigations
+           SET extra_steps  = extra_steps  + ?,
+               extra_tokens = extra_tokens + ?,
+               status       = 'active',
+               updated_at   = ?
+         WHERE id = ?`,
+		extraSteps, extraTokens, time.Now().UTC(), id)
+	return err
 }
 
 func (s *Store) UpdateInvestigationStatus(ctx context.Context, id, status string) error {
