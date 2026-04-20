@@ -32,8 +32,12 @@ jobs:
         run: ls -la dist/
 
       - name: sha256 checksums
+        # Filename `checksums.txt` is the goreleaser convention and is what
+        # the agent self-updater (internal/agent/update) looks for. Format
+        # is one line per artefact: "<hex>  <filename>". sha256sum's
+        # default output already matches.
         working-directory: dist
-        run: sha256sum *.tar.gz > SHA256SUMS
+        run: sha256sum *.tar.gz > checksums.txt
 
       - name: create GitHub release
         uses: softprops/action-gh-release@v2
@@ -42,7 +46,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*.tar.gz
-            dist/SHA256SUMS
+            dist/checksums.txt
 
   docker:
     # Image build is independent of the binary tarballs and runs in parallel.
