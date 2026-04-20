@@ -87,6 +87,7 @@ func (s *Server) handleInstallAgentScript(w http.ResponseWriter, r *http.Request
 		"__HUB_ENDPOINT__", shellQuote(hubEP),
 		"__VERSION__", shellQuote(cfg.Version),
 		"__DOWNLOAD_BASE__", shellQuote(cfg.DownloadBase()),
+		"__RELEASE_REPO__", shellQuote(cfg.ReleaseRepoURL),
 	).Replace(installScriptTemplate)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

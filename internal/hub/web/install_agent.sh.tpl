@@ -8,6 +8,7 @@ AGENT_ID="__AGENT_ID__"
 HUB_ENDPOINT="__HUB_ENDPOINT__"
 VERSION="__VERSION__"
 DOWNLOAD_BASE="__DOWNLOAD_BASE__"
+RELEASE_REPO="__RELEASE_REPO__"
 
 PREFIX=/usr/local/bin
 STATE_DIR=/var/lib/recon
@@ -92,6 +93,17 @@ runtime:
   artifact_dir: ${STATE_DIR}/artifacts
   default_timeout: 30s
   heartbeat_interval: 15s
+
+# Self-updater. Default is ON: agent polls GitHub Releases hourly and, on a
+# newer tag with a matching checksums.txt, downloads + verifies SHA256 +
+# atomically swaps ${PREFIX}/recon-agent + exits so systemd restarts on the
+# new version. Flip to false (and restart) to pin the running binary.
+update:
+  enabled: true
+  repo_url: ${RELEASE_REPO}
+  check_interval: 1h
+  binary_path: ${PREFIX}/recon-agent
+  allow_prerelease: false
 EOF
 chmod 0644 "$CONF"
 
