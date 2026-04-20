@@ -159,7 +159,6 @@ release: ## Bump version tag and push to origin (BUMP=patch|minor|major or VERSI
 	  echo "HEAD ($$head) differs from $(RELEASE_REMOTE)/$(RELEASE_BRANCH) ($$upstream) — push your commit first"; exit 1; \
 	fi; \
 	echo "==> $$current → $$next"; \
-	read -p "tag and push? [y/N] " ok && [ "$$ok" = "y" ] || (echo "aborted"; exit 1); \
 	git tag -a "$$next" -m "release $$next" && \
 	git push $(RELEASE_REMOTE) "$$next" && \
 	echo "pushed $$next — GitHub Actions will build artifacts at https://github.com/vasyakrg/reconops/releases/tag/$$next"
