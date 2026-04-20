@@ -112,6 +112,75 @@ dist-agent:
 clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR)
 
+# ── release ──────────────────────────────────────────────────────────────────
+# Bump the latest vMAJOR.MINOR.PATCH tag, push it to origin so the GitHub
+# Actions release workflow picks it up and builds tarballs + ghcr images.
+#
+#   make release              → patch bump (v0.1.4 → v0.1.5)
+#   make release BUMP=minor   → minor bump (v0.1.4 → v0.2.0)
+#   make release BUMP=major   → major bump (v0.1.4 → v1.0.0)
+#   make release VERSION=v0.3.0  → pin an explicit tag
+#
+# Refuses to run on a dirty tree or if HEAD is not on the default branch tip
+# of origin — release builds must be reproducible from a pushed commit.
+BUMP ?= patch
+RELEASE_REMOTE ?= origin
+RELEASE_BRANCH ?= main
+
+.PHONY: release
+release: ## Bump version tag and push to origin (BUMP=patch|minor|major or VERSION=vX.Y.Z)
+	@git diff --quiet || (echo "working tree is dirty — commit or stash first" && exit 1)
+	@git diff --cached --quiet || (echo "staged changes present — commit or reset first" && exit 1)
+	@git fetch --tags $(RELEASE_REMOTE) >/dev/null
+	@current=$$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo v0.0.0); \
+	if [ -n "$(VERSION)" ]; then \
+	  next="$(VERSION)"; \
+	  case "$$next" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "VERSION must look like vMAJOR.MINOR.PATCH"; exit 1;; esac; \
+	else \
+	  v=$${current#v}; \
+	  major=$${v%%.*}; rest=$${v#*.}; minor=$${rest%%.*}; patch=$${rest#*.}; \
+	  case "$(BUMP)" in \
+	    patch) patch=$$((patch+1));; \
+	    minor) minor=$$((minor+1)); patch=0;; \
+	    major) major=$$((major+1)); minor=0; patch=0;; \
+	    *) echo "BUMP must be patch|minor|major"; exit 1;; \
+	  esac; \
+	  next="v$$major.$$minor.$$patch"; \
+	fi; \
+	if git rev-parse "$$next" >/dev/null 2>&1; then \
+	  echo "tag $$next already exists"; exit 1; \
+	fi; \
+	upstream=$$(git rev-parse $(RELEASE_REMOTE)/$(RELEASE_BRANCH) 2>/dev/null || echo ''); \
+	head=$$(git rev-parse HEAD); \
+	if [ -z "$$upstream" ]; then \
+	  echo "cannot resolve $(RELEASE_REMOTE)/$(RELEASE_BRANCH) — fetch first"; exit 1; \
+	fi; \
+	if [ "$$upstream" != "$$head" ]; then \
+	  echo "HEAD ($$head) differs from $(RELEASE_REMOTE)/$(RELEASE_BRANCH) ($$upstream) — push your commit first"; exit 1; \
+	fi; \
+	echo "==> $$current → $$next"; \
+	read -p "tag and push? [y/N] " ok && [ "$$ok" = "y" ] || (echo "aborted"; exit 1); \
+	git tag -a "$$next" -m "release $$next" && \
+	git push $(RELEASE_REMOTE) "$$next" && \
+	echo "pushed $$next — GitHub Actions will build artifacts at https://github.com/vasyakrg/reconops/releases/tag/$$next"
+
+.PHONY: release-dry
+release-dry: ## Print what `make release` would do, without tagging or pushing
+	@git fetch --tags $(RELEASE_REMOTE) >/dev/null 2>&1 || true
+	@current=$$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo v0.0.0); \
+	if [ -n "$(VERSION)" ]; then next="$(VERSION)"; \
+	else \
+	  v=$${current#v}; major=$${v%%.*}; rest=$${v#*.}; minor=$${rest%%.*}; patch=$${rest#*.}; \
+	  case "$(BUMP)" in \
+	    patch) patch=$$((patch+1));; \
+	    minor) minor=$$((minor+1)); patch=0;; \
+	    major) major=$$((major+1)); minor=0; patch=0;; \
+	  esac; \
+	  next="v$$major.$$minor.$$patch"; \
+	fi; \
+	echo "current: $$current"; \
+	echo "next:    $$next  (BUMP=$(BUMP)$(if $(VERSION), VERSION=$(VERSION)))"
+
 # ── docker compose ───────────────────────────────────────────────────────────
 COMPOSE ?= docker compose
 
