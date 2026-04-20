@@ -94,32 +94,76 @@ type Availabler interface {
 	Available() bool
 }
 
-// PruneUnavailable walks the registry, calls Available() on every
-// collector that implements Availabler, and removes those returning false.
-// Returns the names that were dropped (sorted, for stable logging).
-// Idempotent — safe to call multiple times. Intended to be called once
-// from cmd/agent/main.go after exec.RegisterDefaults().
-func PruneUnavailable() []string {
+// AvailabilityDiff is the result of one RefreshAvailability tick: which
+// collectors transitioned from unavailable→available since the last call
+// (NowAvailable) and which transitioned the other way (NowUnavailable).
+// Empty fields mean the visible manifest set is unchanged.
+type AvailabilityDiff struct {
+	NowAvailable   []string // sorted
+	NowUnavailable []string // sorted
+}
+
+// Changed reports whether the most recent refresh altered the visible
+// manifest set. Convenience wrapper for the agent's manifest-resync loop.
+func (d AvailabilityDiff) Changed() bool {
+	return len(d.NowAvailable) > 0 || len(d.NowUnavailable) > 0
+}
+
+// RefreshAvailability re-runs Available() on every Availabler in the
+// registry and updates the cached state. Returns the diff vs. the previous
+// snapshot so the caller can decide whether to re-advertise the manifest
+// list (e.g. send a fresh Hello to the hub when docker was just installed
+// or removed).
+//
+// Collectors that don't implement Availabler are not touched — they're
+// always visible. First call after process start treats every Availabler
+// as transitioning from "previously unknown" to its current state, which
+// gives the agent's startup log a clean "added/dropped at boot" record.
+//
+// Safe to call from any goroutine; takes the registry mutex for write.
+func RefreshAvailability() AvailabilityDiff {
 	mu.Lock()
 	defer mu.Unlock()
-	dropped := make([]string, 0)
+	var added, removed []string
+	first := len(available) == 0
 	for name, c := range registry {
 		a, ok := c.(Availabler)
 		if !ok {
 			continue
 		}
-		if !a.Available() {
-			delete(registry, name)
-			dropped = append(dropped, name)
+		now := a.Available()
+		prev, had := available[name]
+		available[name] = now
+		switch {
+		case first:
+			// Treat first-ever probe as a transition from "unset" — surface
+			// only the dropped ones so the boot log is "registered but
+			// unavailable: …". The added set is the rest of the registry,
+			// which the operator can read from /collectors anyway.
+			if !now {
+				removed = append(removed, name)
+			}
+		case had && prev != now:
+			if now {
+				added = append(added, name)
+			} else {
+				removed = append(removed, name)
+			}
 		}
 	}
-	sort.Strings(dropped)
-	return dropped
+	sort.Strings(added)
+	sort.Strings(removed)
+	return AvailabilityDiff{NowAvailable: added, NowUnavailable: removed}
 }
 
 var (
 	mu       sync.RWMutex
 	registry = map[string]Collector{}
+	// available tracks the last RefreshAvailability() result. Collectors
+	// without an Availabler implementation are implicitly "true" and never
+	// appear here. Manifests() / Get() consult this map to hide collectors
+	// whose host capability went away (e.g. docker uninstalled at runtime).
+	available = map[string]bool{}
 )
 
 // Register adds c to the registry. Called from init() in concrete collector
@@ -137,29 +181,49 @@ func Register(c Collector) {
 	registry[m.Name] = c
 }
 
+// Get returns a registered collector iff it is also currently available
+// per the most recent RefreshAvailability() snapshot. A collector that
+// implements Availabler but reported false is hidden — Get returns ok=false
+// even though it lives in the registry. This protects the runner from
+// executing a probe whose host capability went away since startup.
 func Get(name string) (Collector, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
 	c, ok := registry[name]
-	return c, ok
+	if !ok {
+		return nil, false
+	}
+	if v, gated := available[name]; gated && !v {
+		return nil, false
+	}
+	return c, true
 }
 
+// All returns only the currently-available collectors. See Get for the
+// availability semantics.
 func All() []Collector {
 	mu.RLock()
 	defer mu.RUnlock()
 	out := make([]Collector, 0, len(registry))
-	for _, c := range registry {
+	for name, c := range registry {
+		if v, gated := available[name]; gated && !v {
+			continue
+		}
 		out = append(out, c)
 	}
 	return out
 }
 
+// Manifests returns the manifest list the agent should advertise to the
+// hub on Hello — only currently-available collectors. Names sorted for
+// deterministic ordering, which makes Hello payloads diffable in logs.
 func Manifests() []Manifest {
 	cs := All()
 	out := make([]Manifest, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, c.Manifest())
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

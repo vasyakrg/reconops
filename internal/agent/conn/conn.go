@@ -134,6 +134,7 @@ func (c *Client) session(ctx context.Context) error {
 	hbCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go c.heartbeatLoop(hbCtx, send)
+	go c.capabilityProbeLoop(hbCtx, send)
 
 	for {
 		msg, err := stream.Recv()
@@ -228,6 +229,36 @@ func (c *Client) sendHello(send *streamSender) error {
 		Collectors: pbManifests,
 		Facts:      facts,
 	}}})
+}
+
+// capabilityProbeLoop re-runs collect.RefreshAvailability() on a fixed
+// cadence (default 60s — coarse enough to not stat /usr/bin/* in a tight
+// loop, fine enough that an `apt install docker` is reflected on the
+// hub's /collectors page within a minute). On any diff, sends a fresh
+// Hello: hub upserts hosts + DELETE+INSERTs collector_manifests, so the
+// LLM investigator immediately starts seeing the newly-available probes
+// (or stops seeing the removed ones) without an agent restart.
+func (c *Client) capabilityProbeLoop(ctx context.Context, send *streamSender) {
+	const interval = 60 * time.Second
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			diff := collect.RefreshAvailability()
+			if !diff.Changed() {
+				continue
+			}
+			c.log.Info("collector capability change — re-advertising manifests",
+				"now_available", diff.NowAvailable,
+				"now_unavailable", diff.NowUnavailable)
+			if err := c.sendHello(send); err != nil {
+				c.log.Warn("re-hello after capability change failed", "err", err)
+			}
+		}
+	}
 }
 
 func (c *Client) heartbeatLoop(ctx context.Context, send *streamSender) {

@@ -23,6 +23,13 @@ hub:
   # default deploy/docker/hub.yaml dns_names list.
   server_name: hub
 
+  update:
+    enabled: true
+    repo_url: https://github.com/vasyakrg/reconops
+    check_interval: 1h
+    binary_path: /usr/local/bin/recon-agent
+    allow_prerelease: false
+
 identity:
   # Distinct from any prod agent_id so live tokens cannot be reused locally.
   id: local-compose-agent

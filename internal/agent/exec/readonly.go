@@ -102,16 +102,17 @@ func Register(e Entry) {
 // resolved at Register time.
 var ErrBinaryNotFound = errors.New("exec: no candidate path for binary exists on this host")
 
-// BinaryAvailable reports whether `bin` was registered AND its candidate
-// path resolved at Register time. Used by collectors' optional Available()
-// method (collect.Availabler) to gate themselves on host capabilities —
-// e.g. docker_ps returns false on hosts where the docker binary is absent,
-// so the collector is pruned from the registry and never advertised to
-// the LLM. Returns false for an unknown binary.
+// BinaryAvailable reports whether `bin` is registered AND at least one of
+// its candidate paths currently exists on disk. Used by collectors'
+// optional Available() method (collect.Availabler). Unlike the resolved
+// path cached at Register() time, this performs a fresh stat(2) on each
+// call so the agent can detect docker / kubectl / systemctl installed
+// (or removed) after startup and re-advertise its manifest list without
+// a restart. Returns false for an unknown binary.
 func BinaryAvailable(bin string) bool {
 	mu.RLock()
-	defer mu.RUnlock()
 	e, ok := whitelist[bin]
+	mu.RUnlock()
 	if !ok {
 		return false
 	}
@@ -121,7 +122,12 @@ func BinaryAvailable(bin string) bool {
 		// returns an error rather than panicking.
 		return true
 	}
-	return e.resolved != ""
+	for _, p := range e.Candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // Result captures stdout, stderr, and exit code of a permitted invocation.
@@ -158,11 +164,22 @@ func Run(ctx context.Context, bin string, args []string) (Result, error) {
 		maxStdout = defaultMaxStdoutBytes
 	}
 
+	// Resolve the path on every call so binaries installed (or moved) after
+	// agent startup are picked up without a restart. Cheap — at most a
+	// handful of stat(2)s per Run.
 	execPath := entry.resolved
-	if execPath == "" {
-		if len(entry.Candidates) > 0 {
+	if len(entry.Candidates) > 0 {
+		execPath = ""
+		for _, p := range entry.Candidates {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				execPath = p
+				break
+			}
+		}
+		if execPath == "" {
 			return Result{}, fmt.Errorf("%w: %q tried %v", ErrBinaryNotFound, bin, entry.Candidates)
 		}
+	} else if execPath == "" {
 		execPath = entry.Bin
 	}
 

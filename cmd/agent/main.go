@@ -42,15 +42,15 @@ func main() {
 	// STATUS_ERROR — agent stays up.
 	exec.RegisterDefaults()
 
-	// Capability-prune the collector registry: any collector implementing
-	// collect.Availabler whose Available() returns false (typically because
-	// the host is missing a required binary like docker / kubectl / systemctl)
-	// is dropped here. This keeps the manifest list the agent advertises in
-	// Hello — and therefore the tool catalog the LLM investigator sees —
-	// limited to collectors that can actually run on this host. Saves the
-	// model from proposing dead-end probes.
-	if dropped := collect.PruneUnavailable(); len(dropped) > 0 {
-		log.Info("collectors pruned (unavailable on this host)", "names", dropped)
+	// Initial capability probe: marks every Availabler-implementing
+	// collector as available/unavailable per current host state (binary
+	// present on disk, etc). Collectors not implementing Availabler are
+	// always visible. The agent's connect loop then re-probes on a 60s
+	// timer and re-sends Hello on any diff, so installing docker or
+	// systemctl mid-session brings the corresponding collectors online
+	// without an agent restart (see capabilityProbeLoop).
+	if diff := collect.RefreshAvailability(); len(diff.NowUnavailable) > 0 {
+		log.Info("collectors registered but unavailable on this host", "names", diff.NowUnavailable)
 	}
 
 	cfg, err := conn.LoadConfig(*cfgPath)
