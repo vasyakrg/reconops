@@ -73,15 +73,19 @@ func New(opts Options, log *slog.Logger) *Updater {
 	}
 }
 
-// Run blocks until ctx is done. Fires first check after CheckInterval — not
-// immediately — to avoid a fast update loop if a bad release is published
-// (the operator has time to pin `update.enabled: false` or downgrade before
-// the next tick).
+// Run blocks until ctx is done. Fires an immediate check on startup so a
+// freshly-restarted agent picks up a newer release without waiting a full
+// CheckInterval, then ticks on CheckInterval thereafter. If a bad release
+// slips out the operator sets `update.enabled: false` and restarts — the
+// next tick will no-op.
 func (u *Updater) Run(ctx context.Context) {
 	if u == nil {
 		return
 	}
 	u.log.Info("self-updater enabled", "interval", u.opts.CheckInterval, "binary", u.opts.BinaryPath, "current", u.current)
+	if err := u.checkAndApply(ctx); err != nil {
+		u.log.Warn("self-update check failed", "err", err)
+	}
 	t := time.NewTicker(u.opts.CheckInterval)
 	defer t.Stop()
 	for {
