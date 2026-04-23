@@ -72,10 +72,22 @@ type LLMConfig struct {
 }
 
 type ServerConfig struct {
-	GRPCAddr string   `yaml:"grpc_addr"`
-	HTTPAddr string   `yaml:"http_addr"`
-	DNSNames []string `yaml:"dns_names"`
-	IPs      []string `yaml:"ip_addrs"`
+	GRPCAddr string        `yaml:"grpc_addr"`
+	HTTPAddr string        `yaml:"http_addr"`
+	DNSNames []string      `yaml:"dns_names"`
+	IPs      []string      `yaml:"ip_addrs"`
+	HTTPTLS  HTTPTLSConfig `yaml:"http_tls"`
+}
+
+// HTTPTLSConfig enables native TLS on the web/API listener so the hub can
+// be reached directly from remote operators / MCP clients without nginx in
+// front. When Enabled is false (default) the listener serves plain HTTP —
+// the expected topology is still "nginx terminates TLS" for most prod
+// deployments, but this option exists for single-VM / remote-API setups.
+type HTTPTLSConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
 }
 
 type StorageConfig struct {

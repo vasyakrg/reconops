@@ -32,6 +32,10 @@ type HandlerEnv struct {
 	// collect / collect_batch reject any host_id outside the set. Empty
 	// preserves the legacy behaviour ("all hosts").
 	AllowedHosts []string
+	// Bus, when non-nil, receives finding.added events fired from
+	// handleAddFinding so remote API subscribers see the finding without
+	// polling. Nil-safe — Bus.Publish itself handles the nil receiver.
+	Bus *Bus
 }
 
 // inAllowed returns true if the host is in the allowlist; when the allowlist
@@ -639,6 +643,13 @@ func handleAddFinding(ctx context.Context, env HandlerEnv, argsJSON string) Tool
 	}); err != nil {
 		return errResult(err)
 	}
+	env.Bus.Publish(env.InvestigationID, EventFindingAdded, map[string]any{
+		"finding_id":    id,
+		"severity":      a.Severity,
+		"code":          a.Code,
+		"message":       a.Message,
+		"evidence_refs": a.EvidenceRefs,
+	})
 	return okResult(map[string]any{"finding_id": id})
 }
 

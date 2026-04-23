@@ -150,6 +150,7 @@ func main() {
 		loop = investigator.NewLoop(st, llmClient, hr, apiSrv.IsOnline, apiSrv.OnlineAgents,
 			cfg.LLM.MaxStepsPerInvestigation, cfg.LLM.MaxTokensPerInvestigation,
 			log.With("comp", "investigator"))
+		loop.SetBus(investigator.NewBus())
 		// Resume investigations that were active before this hub restarted —
 		// their loop goroutines died with the previous process.
 		if err := loop.Resume(rootCtx); err != nil {
@@ -224,7 +225,16 @@ func main() {
 		log.Error("web init", "err", err)
 		os.Exit(2)
 	}
-	if err := webSrv.Serve(rootCtx, cfg.Server.HTTPAddr); err != nil {
+	certFile, keyFile := "", ""
+	if cfg.Server.HTTPTLS.Enabled {
+		certFile = cfg.Server.HTTPTLS.CertFile
+		keyFile = cfg.Server.HTTPTLS.KeyFile
+		if certFile == "" || keyFile == "" {
+			log.Error("server.http_tls.enabled=true but cert_file/key_file missing")
+			os.Exit(2)
+		}
+	}
+	if err := webSrv.ServeTLS(rootCtx, cfg.Server.HTTPAddr, certFile, keyFile); err != nil {
 		log.Error("web serve", "err", err)
 	}
 }

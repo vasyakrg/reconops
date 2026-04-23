@@ -84,6 +84,55 @@
       {{end}}
     </div>
 
+    <div id="api-tokens" class="panel">
+      <div class="panel-hd"><span>API tokens</span><span class="muted mono" style="text-transform:none;letter-spacing:0;font-size:11px">{{len .APITokens}}</span></div>
+      {{if .IssuedAPIToken}}
+      <div style="padding:14px;background:rgba(122,162,255,0.08);border-bottom:1px solid var(--border)">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--accent);font-weight:600;margin-bottom:6px">API token issued — copy now, shown once</div>
+        <pre class="mono" style="margin:0;word-break:break-all;white-space:pre-wrap">{{.IssuedAPIToken}}</pre>
+      </div>
+      {{end}}
+      <form method="post" action="/settings/api-tokens/issue" style="padding:14px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--border)">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">name</label>
+        <input type="text" name="name" required placeholder="my-laptop-mcp" style="font-family:var(--font-mono);font-size:12px">
+        <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">scope</label>
+        <select name="scope" style="font-family:var(--font-mono);font-size:12px">
+          <option value="read">read (GET only)</option>
+          <option value="investigate" selected>investigate (drive investigations)</option>
+          <option value="admin">admin (+ host ops)</option>
+        </select>
+        <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">TTL (empty = never)</label>
+        <input type="text" name="ttl" placeholder="720h" style="font-family:var(--font-mono);font-size:12px">
+        <button class="btn primary" type="submit">Issue API token</button>
+        <div class="dim" style="font-size:10.5px;line-height:1.45">Use with <span class="mono">Authorization: Bearer &lt;token&gt;</span> against /api/v1/*. Shown once.</div>
+      </form>
+      {{if .APITokens}}
+      <div>
+        {{range .APITokens}}
+        <div style="padding:8px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:11.5px">
+          <div style="flex:1;min-width:0">
+            <div style="color:var(--fg-0);font-size:12px"><span class="mono">{{.Name}}</span> <span class="badge accent" style="margin-left:6px">{{.Scope}}</span></div>
+            <div class="mono dim" style="font-size:10.5px">
+              {{.Prefix}}…
+              {{if .RevokedAt.Valid}}<span style="color:var(--err)">revoked</span> {{sinceUTC .RevokedAt.Time}}
+              {{else if and .ExpiresAt.Valid (.ExpiresAt.Time.Before now)}}<span style="color:var(--err)">expired</span> {{sinceUTC .ExpiresAt.Time}}
+              {{else}}<span style="color:var(--ok)">active</span>{{if .LastUsedAt.Valid}} · used {{sinceUTC .LastUsedAt.Time}}{{end}}{{end}}
+            </div>
+          </div>
+          {{if not .RevokedAt.Valid}}
+          <form method="post" action="/settings/api-tokens/revoke" onsubmit="return confirm('Revoke this API token? Existing clients using it will fail.')" style="margin:0">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <button class="btn xs danger-ghost" type="submit">revoke</button>
+          </form>
+          {{end}}
+        </div>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+
     <div class="panel">
       <div class="panel-hd"><span>Admins</span></div>
       <div style="padding:12px 14px">

@@ -4,6 +4,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -192,13 +193,26 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/settings", auth(s.handleSettings))
 	mux.HandleFunc("/settings/issue-token", auth(s.handleIssueToken))
 	mux.HandleFunc("/settings/revoke-token", auth(s.handleRevokeToken))
+	mux.HandleFunc("/settings/api-tokens/issue", auth(s.handleIssueAPIToken))
+	mux.HandleFunc("/settings/api-tokens/revoke", auth(s.handleRevokeAPIToken))
 	mux.HandleFunc("/hosts/delete", auth(s.handleHostDelete))
 	mux.HandleFunc("/hosts/revoke", auth(s.handleHostRevoke))
 	mux.HandleFunc("/hosts/quick-install", auth(s.handleQuickInstall))
+
+	// /api/v1/* — Bearer-auth JSON, no cookie/CSRF chain.
+	s.registerAPIRoutes(mux)
 	return mux
 }
 
 func (s *Server) Serve(ctx context.Context, addr string) error {
+	return s.ServeTLS(ctx, addr, "", "")
+}
+
+// ServeTLS starts the HTTP listener. When certFile and keyFile are both
+// non-empty the listener terminates TLS itself; otherwise plain HTTP is
+// served and operators are expected to front it with nginx (preserving
+// the legacy compose topology).
+func (s *Server) ServeTLS(ctx context.Context, addr, certFile, keyFile string) error {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           s.Routes(),
@@ -213,8 +227,15 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 	}()
 	go s.runSessionGC(ctx)
 
-	s.log.Info("web listening", "addr", addr, "auth", s.auth.Enabled())
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	tls := certFile != "" && keyFile != ""
+	s.log.Info("web listening", "addr", addr, "auth", s.auth.Enabled(), "tls", tls)
+	var err error
+	if tls {
+		err = srv.ListenAndServeTLS(certFile, keyFile)
+	} else {
+		err = srv.ListenAndServe()
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
@@ -496,17 +517,95 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		maxSteps, maxTokens = s.loop.Budgets()
 	}
 	tokens, _ := s.store.ListBootstrapTokens(r.Context(), 50)
+	apiTokens, _ := s.store.ListAPITokens(r.Context(), 100)
+	issuedAPI := ""
+	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
+		issuedAPI = s.sessions.popFlash(sid.Value, "issued_api_token")
+	}
 	s.renderForReq(w, r, "settings", map[string]any{
-		"Title":     "Settings",
-		"Hosts":     hosts,
-		"Issued":    issued,
-		"Model":     model,
-		"BaseURL":   baseURL,
-		"MaxSteps":  maxSteps,
-		"MaxTokens": maxTokens,
-		"AdminUser": s.auth.Username,
-		"Tokens":    tokens,
+		"Title":          "Settings",
+		"Hosts":          hosts,
+		"Issued":         issued,
+		"IssuedAPIToken": issuedAPI,
+		"Model":          model,
+		"BaseURL":        baseURL,
+		"MaxSteps":       maxSteps,
+		"MaxTokens":      maxTokens,
+		"AdminUser":      s.auth.Username,
+		"Tokens":         tokens,
+		"APITokens":      apiTokens,
 	})
+}
+
+func (s *Server) handleIssueAPIToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	scope := strings.TrimSpace(r.FormValue("scope"))
+	ttlS := strings.TrimSpace(r.FormValue("ttl"))
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	if !store.ValidAPIScope(scope) {
+		http.Error(w, "invalid scope", http.StatusBadRequest)
+		return
+	}
+	var expires sql.NullTime
+	if ttlS != "" {
+		d, err := time.ParseDuration(ttlS)
+		if err != nil || d <= 0 || d > 10*365*24*time.Hour {
+			http.Error(w, "invalid ttl", http.StatusBadRequest)
+			return
+		}
+		expires = sql.NullTime{Time: time.Now().UTC().Add(d), Valid: true}
+	}
+	raw, hash, prefix, err := store.GenerateAPIToken()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	id, err := s.store.InsertAPIToken(r.Context(), name, hash, prefix, scope, authedUser(r), expires)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r.Context(), authedUser(r), "api_token.issue",
+		map[string]any{"id": id, "name": name, "scope": scope})
+	if sid, err := r.Cookie(cookieSession); err == nil && sid != nil {
+		s.sessions.setFlash(sid.Value, "issued_api_token", raw)
+	}
+	http.Redirect(w, r, "/settings#api-tokens", http.StatusSeeOther)
+}
+
+func (s *Server) handleRevokeAPIToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.FormValue("id")
+	if id == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.RevokeAPIToken(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.audit(r.Context(), authedUser(r), "api_token.revoke", map[string]any{"id": id})
+	http.Redirect(w, r, "/settings#api-tokens", http.StatusSeeOther)
 }
 
 func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {

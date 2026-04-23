@@ -39,6 +39,38 @@ type Loop struct {
 	// (review C3) per-investigation cool-off after a failed compaction so
 	// we don't burn budget retrying every turn. nil entry means OK.
 	compactCooldown map[string]time.Time
+
+	// bus is the optional fan-out channel for the /api/v1 SSE stream.
+	// Nil is fine — every Publish call is guarded by the Bus itself.
+	bus *Bus
+}
+
+// SetBus attaches an event bus so persist operations fan out live events
+// to remote API subscribers. Call once at wiring time (cmd/hub/main.go).
+func (l *Loop) SetBus(b *Bus) { l.bus = b }
+
+// Bus exposes the attached bus for handlers that need to publish (e.g.
+// handleAddFinding through HandlerEnv).
+func (l *Loop) Bus() *Bus { return l.bus }
+
+func (l *Loop) pubMessage(invID string, msg store.Message) {
+	l.bus.Publish(invID, EventMessageAppended, map[string]any{
+		"role":    msg.Role,
+		"content": msg.Content,
+	})
+}
+
+func (l *Loop) pubStatus(invID, status string) {
+	l.bus.Publish(invID, EventStatusChanged, map[string]any{"status": status})
+}
+
+func (l *Loop) pubToolCall(invID string, tc store.ToolCallRow, typ EventType) {
+	l.bus.Publish(invID, typ, map[string]any{
+		"tool_call_id": tc.ID,
+		"tool":         tc.Tool,
+		"status":       tc.Status,
+		"input_json":   tc.InputJSON,
+	})
 }
 
 func NewLoop(st *store.Store, llmC *llm.Client, run *runner.Runner,
@@ -110,6 +142,8 @@ func (l *Loop) Start(ctx context.Context, goal, createdBy string, allowedHosts .
 	}); err != nil {
 		return "", err
 	}
+	l.pubStatus(id, "active")
+	l.pubMessage(id, store.Message{Role: "user", Content: goal})
 	// Kick off the first LLM call asynchronously — operator polls the page.
 	l.spawn(id)
 	return id, nil
@@ -228,10 +262,16 @@ func (l *Loop) DecideWithEdit(ctx context.Context, investigationID, decision, ne
 		if err := l.store.UpdateToolCall(ctx, pending.ID, "aborted", decidedBy, "", ""); err != nil {
 			return err
 		}
-		return l.store.FinishInvestigation(ctx, investigationID, "aborted", `{"summary":"operator ended"}`)
+		if err := l.store.FinishInvestigation(ctx, investigationID, "aborted", `{"summary":"operator ended"}`); err != nil {
+			return err
+		}
+		l.pubStatus(investigationID, "aborted")
+		return nil
 	default:
 		return fmt.Errorf("unknown decision %q", decision)
 	}
+	pending.Status = decision
+	l.pubToolCall(investigationID, *pending, EventToolCallUpdated)
 	l.spawn(investigationID)
 	return nil
 }
@@ -257,6 +297,11 @@ func (l *Loop) Extend(ctx context.Context, investigationID string, extraSteps, e
 	})
 	_ = l.store.AuditLog(ctx, decidedBy, "investigation.extend",
 		map[string]any{"investigation_id": investigationID, "extra_steps": extraSteps, "extra_tokens": extraTokens})
+	l.bus.Publish(investigationID, EventStatusChanged, map[string]any{
+		"status":       "active",
+		"extra_steps":  extraSteps,
+		"extra_tokens": extraTokens,
+	})
 	l.spawn(investigationID)
 	return nil
 }
@@ -572,6 +617,10 @@ func (l *Loop) step(ctx context.Context, investigationID string) (bool, error) {
 			Content: fmt.Sprintf("BUDGET PAUSE: max_steps_exceeded (used=%d, cap=%d). Operator must extend or finalize.",
 				inv.TotalToolCalls, stepsCap),
 		})
+		l.bus.Publish(investigationID, EventBudgetExhausted, map[string]any{
+			"kind": "steps", "used": inv.TotalToolCalls, "cap": stepsCap,
+		})
+		l.pubStatus(investigationID, "paused")
 		return false, nil
 	}
 	// (review C2) Budget covers user-driven turns only — internal
@@ -583,6 +632,12 @@ func (l *Loop) step(ctx context.Context, investigationID string) (bool, error) {
 			Content: fmt.Sprintf("BUDGET PAUSE: max_tokens_exceeded (used=%d, cap=%d, compaction=%d). Operator must extend or finalize.",
 				inv.TotalPromptTokens+inv.TotalCompletionTokens, tokensCap, inv.CompactionTokens),
 		})
+		l.bus.Publish(investigationID, EventBudgetExhausted, map[string]any{
+			"kind": "tokens",
+			"used": inv.TotalPromptTokens + inv.TotalCompletionTokens,
+			"cap":  tokensCap,
+		})
+		l.pubStatus(investigationID, "paused")
 		return false, nil
 	}
 
@@ -688,6 +743,11 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 	}); err != nil {
 		return false, err
 	}
+	l.bus.Publish(inv.ID, EventMessageAppended, map[string]any{
+		"role":       "assistant",
+		"content":    choice.Content,
+		"tool_calls": keptCalls,
+	})
 
 	if len(choice.ToolCalls) == 0 {
 		// LLM violated the contract — synthesize a system_note nudging it.
@@ -725,6 +785,12 @@ func (l *Loop) callLLM(ctx context.Context, inv store.Investigation) (bool, erro
 		return false, err
 	}
 	_ = l.store.IncrementToolCalls(ctx, inv.ID)
+	l.bus.Publish(inv.ID, EventToolCallPending, map[string]any{
+		"tool_call_id": first.ID,
+		"tool":         first.Function.Name,
+		"status":       status,
+		"input_json":   first.Function.Arguments,
+	})
 
 	if autoApprove {
 		return true, nil // execute immediately
@@ -822,6 +888,18 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 	}); err != nil {
 		return err
 	}
+	l.bus.Publish(investigationID, EventToolCallUpdated, map[string]any{
+		"tool_call_id": tc.ID,
+		"tool":         tc.Tool,
+		"status":       "executed",
+		"task_id":      taskID,
+		"ok":           result.OK,
+	})
+	l.bus.Publish(investigationID, EventMessageAppended, map[string]any{
+		"role":         "tool",
+		"content":      string(resultBytes),
+		"tool_call_id": tc.ID,
+	})
 
 	switch tc.Tool {
 	case "mark_done":
@@ -830,8 +908,10 @@ func (l *Loop) executeApproved(ctx context.Context, investigationID string, tc *
 		}
 		_ = json.Unmarshal([]byte(tc.InputJSON), &args)
 		_ = l.store.FinishInvestigation(ctx, investigationID, "done", string(args.Summary))
+		l.pubStatus(investigationID, "done")
 	case "ask_operator":
 		_ = l.store.UpdateInvestigationStatus(ctx, investigationID, "waiting")
+		l.pubStatus(investigationID, "waiting")
 	case "add_finding":
 		// (termination forcing) After a load-bearing finding, inject a
 		// system_note that tells the model — on the SAME turn the prompt
