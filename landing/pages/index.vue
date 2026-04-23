@@ -94,7 +94,6 @@ const faq = [
           </p>
           <div class="mt-8 flex flex-wrap gap-3">
             <a href="#quickstart" class="btn-primary">Quickstart · 5 минут</a>
-            <a href="#docs" class="btn-ghost">Документация</a>
           </div>
         </div>
         <HeroDemo />
@@ -383,9 +382,6 @@ const faq = [
             class="flex items-center justify-between border-t border-white/5 px-4 py-2.5 text-xs text-fg-2"
           >
             <span class="font-mono">5 минут · от clone до первого findings</span>
-            <a href="#docs" class="text-accent-1 hover:underline">
-              Полный install runbook →
-            </a>
           </div>
         </div>
       </div>
