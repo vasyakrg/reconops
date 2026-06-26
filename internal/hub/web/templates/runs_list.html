@@ -30,8 +30,8 @@
         {{else if eq .Status "error"}}<span class="badge err"><span class="dot err" style="width:6px;height:6px"></span>error</span>
         {{else}}<span class="badge"><span class="dot" style="width:6px;height:6px"></span>{{.Status}}</span>{{end}}
       </td>
-      <td class="mono muted" style="font-size:11px" title="{{.CreatedAt.UTC.Format "2006-01-02 15:04:05 UTC"}}">{{sinceUTC .CreatedAt}}</td>
-      <td class="mono muted" style="font-size:11px">{{if .FinishedAt.Valid}}{{.FinishedAt.Time.UTC.Format "15:04:05"}}{{else}}<span class="dim">—</span>{{end}}</td>
+      <td class="mono muted" style="font-size:11px" title="{{formatUserTZ $.UserTZ .CreatedAt "2006-01-02 15:04:05 MST"}}">{{sinceUTC .CreatedAt}}</td>
+      <td class="mono muted" style="font-size:11px">{{if .FinishedAt.Valid}}{{formatUserTZ $.UserTZ .FinishedAt.Time "15:04:05"}}{{else}}<span class="dim">—</span>{{end}}</td>
     </tr>
   {{end}}
   </tbody>

@@ -1,4 +1,61 @@
 {{define "investigation_detail"}}
+<div id="investigation-status-fragment" data-snapshot="{{.InitSnap}}" data-status="{{.Inv.Status}}" data-frag-hash="{{.StatusHash}}">
+  {{template "investigation_status_fragment" .}}
+</div>
+
+<section style="padding:18px 24px 14px;border-bottom:1px solid var(--border);background:var(--bg-0)">
+  <div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Goal</div>
+  <div class="t-lg" style="color:var(--fg-0);font-weight:500;max-width:90ch">{{.Inv.Goal}}</div>
+  <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:var(--fg-2);flex-wrap:wrap" class="mono">
+    <span>created <span style="color:var(--fg-1)">{{formatUserTZ $.UserTZ .Inv.CreatedAt "2006-01-02 15:04:05 MST"}}</span> by <span style="color:var(--fg-1)">{{.Inv.CreatedBy}}</span></span>
+    <span>· {{sinceUTC .Inv.CreatedAt}}</span>
+    <span>· <span style="color:var(--fg-1)">{{len .Findings}} finding{{if ne (len .Findings) 1}}s{{end}}</span></span>
+    {{if .Inv.AllowedHosts}}
+    <span>· scope: {{range $i, $h := .Inv.AllowedHosts}}{{if $i}}<span class="dim">, </span>{{end}}<span class="chip"><span class="v">{{$h}}</span></span>{{end}}</span>
+    {{else}}
+    <span>· scope: <span class="dim">all hosts</span></span>
+    {{end}}
+    <span>· model: {{if .Inv.ModelProfile}}<span style="color:var(--fg-1)">{{.Inv.ModelProfile}}</span> <span class="dim">(pinned)</span>{{else}}<span class="dim">auto</span>{{end}}</span>
+  </div>
+</section>
+
+<section class="pg-body" style="display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:18px;align-items:flex-start">
+  <div id="investigation-timeline-fragment" data-live-region="timeline" data-pending-id="{{if .Pending}}{{.Pending.ID}}{{end}}" data-frag-hash="{{.TimelineHash}}">
+    {{template "investigation_timeline_fragment" .}}
+  </div>
+  <div id="investigation-side-fragment" data-live-region="side" data-frag-hash="{{.SideHash}}">
+    {{template "investigation_side_fragment" .}}
+  </div>
+</section>
+
+{{if and (ne .Inv.Status "done") (ne .Inv.Status "aborted")}}
+<script>
+(function() {
+  // Start the live engine for any non-terminal status (active, waiting,
+  // paused). It used to start only for "active", so an investigation that
+  // moved to waiting/paused before the page loaded never went live.
+  window.ReconInvestigationLive && window.ReconInvestigationLive({
+    id: "{{.Inv.ID}}",
+    snapshot: {{.InitSnap | printf "%q"}}
+  });
+})();
+</script>
+{{end}}
+{{end}}
+
+{{define "investigation_live_fragments"}}
+<div id="investigation-status-fragment" data-snapshot="{{.InitSnap}}" data-status="{{.Inv.Status}}" data-frag-hash="{{.StatusHash}}">
+  {{template "investigation_status_fragment" .}}
+</div>
+<div id="investigation-timeline-fragment" data-live-region="timeline" data-pending-id="{{if .Pending}}{{.Pending.ID}}{{end}}" data-frag-hash="{{.TimelineHash}}">
+  {{template "investigation_timeline_fragment" .}}
+</div>
+<div id="investigation-side-fragment" data-live-region="side" data-frag-hash="{{.SideHash}}">
+  {{template "investigation_side_fragment" .}}
+</div>
+{{end}}
+
+{{define "investigation_status_fragment"}}
 <header class="pg-hd" style="gap:16px">
   <div style="display:flex;align-items:center;gap:14px;min-width:0;flex:1;flex-wrap:wrap">
     <div class="crumbs">
@@ -13,7 +70,7 @@
     {{else if eq .Inv.Status "aborted"}}<span class="badge err"><span class="dot err" style="width:6px;height:6px"></span>aborted</span>
     {{else}}<span class="badge"><span class="dot" style="width:6px;height:6px"></span>{{.Inv.Status}}</span>{{end}}
     {{if .Inv.Model}}<span class="chip"><span class="k">model</span><span class="v mono">{{.Inv.Model}}</span></span>{{end}}
-    {{if eq .Inv.Status "active"}}<span id="live-pulse" class="live-pulse"><span class="dot ok pulse" style="width:6px;height:6px"></span>live · SSE</span>{{end}}
+    {{if eq .Inv.Status "active"}}<span id="live-pulse" class="live-pulse"><span class="dot ok pulse" style="width:6px;height:6px"></span><span data-live-label>live</span></span>{{end}}
   </div>
   <div style="display:flex;align-items:center;gap:18px">
     <div class="budget" title="Steps used / budget">
@@ -26,262 +83,605 @@
       <span class="mono" style="color:var(--fg-0)">{{compactNum .UsedTokens}}/{{compactNum .MaxTokens}}</span>
       <div class="pbar {{if ge .TokensPct 90}}err{{else if ge .TokensPct 70}}warn{{end}}"><span style="width:{{.TokensPct}}%"></span></div>
     </div>
+    {{$armed := or (gt .Inv.AutoRunUntilSteps 0) (gt .Inv.AutoRunUntilTokens 0)}}
     {{if and (ne .Inv.Status "done") (ne .Inv.Status "aborted")}}
-    <form method="post" action="/investigations/auto-approve" style="margin:0">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-      {{if .Inv.AutoApprove}}
-      <input type="hidden" name="on" value="0">
-      <button class="btn sm" type="submit" title="Stop auto-approving — every next tool_call waits for your click again" style="background:var(--accent-bg);border-color:var(--accent);color:var(--accent)">⚡ auto · on</button>
+    {{/* A single per-investigation "Automation" control. This was two
+         near-identical header forms — the unbounded ⚡ auto toggle and the
+         bounded ▶ run autonomously arm form — which read as one ambiguous blob
+         and gave no hint they were scoped per investigation (the "automation in
+         one session leaks into another" confusion). The two modes now live
+         behind one ⚙ Automation popover, each clearly labelled and explicitly
+         scoped to THIS investigation. While a bounded burst is armed it
+         supersedes the unbounded toggle, so the header shows a legible armed
+         status + a take-over (disarm) control instead. */}}
+    {{if $armed}}
+    <div style="display:flex;align-items:center;gap:8px">
+      {{if and .Pending (eq .Pending.Tool "mark_done")}}
+      {{/* Held terminal close under an armed run: the model is NOT working — it
+           is waiting for the operator to approve the conclusion below. Say so,
+           so the live-pulse "live" badge isn't read as "still progressing". This
+           text flips only on the real transition (mark_done becomes pending), so
+           it is change-gated, not per-tick churn (cf. flicker patch). */}}
+      <span class="badge warn" title="Auto-run paused: the model proposed closing this investigation. Review and approve the conclusion below to finalize.">▶ auto-run · paused — review the conclusion</span>
       {{else}}
-      <input type="hidden" name="on" value="1">
-      <button class="btn sm ghost" type="submit" title="Auto-approve every subsequent tool_call in this investigation">⚡ auto · off</button>
+      <span class="badge accent" title="Autonomous run for THIS investigation only — probes auto-approve until the target, then it pauses for your review.">▶ auto-run · {{.Inv.TotalToolCalls}}{{if gt .Inv.AutoRunUntilSteps 0}}/{{.Inv.AutoRunUntilSteps}} steps{{else}} steps{{end}} · pauses for review</span>
       {{end}}
-    </form>
-    {{end}}
-    <a class="btn sm ghost" href="/investigations/export/{{.Inv.ID}}">Export .md</a>
-  </div>
-</header>
-
-<!-- Goal block -->
-<section style="padding:18px 24px 14px;border-bottom:1px solid var(--border);background:var(--bg-0)">
-  <div class="muted t-xs" style="text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px">Goal</div>
-  <div class="t-lg" style="color:var(--fg-0);font-weight:500;max-width:90ch">{{.Inv.Goal}}</div>
-  <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:var(--fg-2);flex-wrap:wrap" class="mono">
-    <span>created <span style="color:var(--fg-1)">{{.Inv.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</span> by <span style="color:var(--fg-1)">{{.Inv.CreatedBy}}</span></span>
-    <span>· {{sinceUTC .Inv.CreatedAt}}</span>
-    <span>· <span style="color:var(--fg-1)">{{len .Findings}} finding{{if ne (len .Findings) 1}}s{{end}}</span></span>
-    {{if .Inv.AllowedHosts}}
-    <span>· scope: {{range $i, $h := .Inv.AllowedHosts}}{{if $i}}<span class="dim">, </span>{{end}}<span class="chip"><span class="v">{{$h}}</span></span>{{end}}</span>
-    {{else}}
-    <span>· scope: <span class="dim">all hosts</span></span>
-    {{end}}
-  </div>
-</section>
-
-<section class="pg-body" style="display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:18px;align-items:flex-start">
-
-  <!-- ════════════ COL 1: PENDING + TIMELINE ════════════ -->
-  <div class="panel" style="min-width:0">
-    <div class="panel-hd">
-      <div class="hd-left">
-        <span>Actions timeline</span>
-        <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .ToolCalls}} step{{if ne (len .ToolCalls) 1}}s{{end}}{{if .Pending}} · 1 pending{{end}}</span>
-      </div>
-    </div>
-
-    {{if .Pending}}
-    <div style="padding:10px 12px 4px;background:var(--bg-0)">
-      <form method="post" action="/investigations/decide" class="pending" data-variant="framed">
+      <form method="post" action="/investigations/autonomous" style="margin:0">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-        <input type="hidden" name="tool_call_id" value="{{.Pending.ID}}">
-        <div class="pending-hd">
-          <div class="title">
-            <span class="lbl">◇ Pending approval</span>
-            <span>{{.Pending.Tool}}</span>
-            <span class="muted mono" style="font-size:11px">· step {{.Pending.Seq}}</span>
-          </div>
-          <div class="meta-right">
-            <span class="mono">{{shortID .Pending.ID 12}}</span>
-          </div>
-        </div>
-        <div class="pending-body">
-          {{if .Pending.Rationale}}<div class="pending-rationale">{{.Pending.Rationale}}</div>{{end}}
-          <div class="t-xs" style="color:var(--fg-3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:5px;font-weight:600">Input</div>
-          <textarea name="new_input_json" class="pending-input" style="width:100%;min-height:90px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:12px">{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</textarea>
-          <div class="pending-actions" style="margin-top:12px">
-            <button class="btn primary" type="submit" name="decision" value="approve">Approve</button>
-            <button class="btn" type="submit" name="decision" value="edit">Edit & Approve</button>
-            <button class="btn ghost" type="submit" name="decision" value="skip">Skip</button>
-            <button class="btn danger-ghost" type="submit" name="decision" value="end">End investigation</button>
-          </div>
-        </div>
+        <input type="hidden" name="action" value="disarm">
+        <button class="btn sm ghost" type="submit" title="Take over — go back to approving each step yourself">⏸ take over</button>
       </form>
     </div>
-    {{else if eq .Inv.Status "active"}}
-    <div style="padding:14px 14px 10px;color:var(--fg-2);font-size:12px;font-style:italic">⏳ Waiting for the model — page will reload when the next step appears.</div>
-    {{else if eq .Inv.Status "paused"}}
-    <div style="padding:10px 12px 4px;background:var(--bg-0)">
-      <div class="card" style="border-color:color-mix(in oklab, var(--warn) 50%, var(--border));background:var(--warn-bg);padding:14px">
-        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--warn);font-weight:600;margin-bottom:6px">Budget exhausted — what next?</div>
-        <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55;margin-bottom:12px">
-          Used <span class="mono" style="color:var(--fg-0)">{{compactNum .UsedTokens}}</span> of <span class="mono" style="color:var(--fg-0)">{{compactNum .MaxTokens}}</span> tokens · <span class="mono" style="color:var(--fg-0)">{{.Inv.TotalToolCalls}}</span> of <span class="mono" style="color:var(--fg-0)">{{.MaxSteps}}</span> steps. The investigator paused — choose to keep digging or wrap up with what we've got.
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <form method="post" action="/investigations/extend" style="margin:0">
-            <input type="hidden" name="csrf" value="{{.CSRF}}">
-            <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-            <input type="hidden" name="extra_tokens" value="500000">
-            <input type="hidden" name="extra_steps" value="10">
-            <button class="btn primary" type="submit">+ 500k tokens · continue</button>
-          </form>
-          <form method="post" action="/investigations/finalize" style="margin:0">
-            <input type="hidden" name="csrf" value="{{.CSRF}}">
-            <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-            <button class="btn" type="submit">Stop · summarise + "look here next"</button>
-          </form>
-        </div>
-      </div>
-    </div>
-    {{end}}
-
-    <!-- Timeline rows -->
-    <div class="timeline">
-    {{range .ToolCalls}}
-      {{$st := .Status}}
-      {{$tlSt := "executed"}}
-      {{if eq $st "pending"}}{{$tlSt = "running"}}{{end}}
-      {{if or (eq $st "failed") (eq $st "aborted")}}{{$tlSt = "error"}}{{end}}
-      {{if eq $st "skipped"}}{{$tlSt = "skipped"}}{{end}}
-      <details class="tl-row" data-status="{{$tlSt}}" style="display:block;cursor:pointer">
-        <summary style="display:grid;grid-template-columns:36px 28px 200px 1fr auto;align-items:center;gap:10px;padding:7px 12px;border-left:2px solid transparent;border-bottom:1px solid var(--border);font-size:12.5px;list-style:none;cursor:pointer">
-          <span style="color:var(--fg-3);font-family:var(--font-mono);font-size:11px;text-align:right">{{printf "%02d" .Seq}}</span>
-          <span style="display:flex;justify-content:center">
-            <span class="dot {{if eq $st "executed"}}ok{{else if eq $st "pending"}}pending pulse{{else if eq $st "skipped"}}offline{{else if or (eq $st "failed") (eq $st "aborted")}}err{{else}}info{{end}}"></span>
-          </span>
-          <span style="font-family:var(--font-mono);color:var(--fg-0);display:flex;align-items:center;gap:8px">
-            {{.Tool}}
-            {{if .TaskID.Valid}}<span class="dim" style="font-size:10.5px">{{shortID .TaskID.String 10}}</span>{{end}}
-          </span>
-          <span style="color:var(--fg-1);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{if .Rationale}}{{.Rationale}}{{else}}<span class="dim">no rationale</span>{{end}}</span>
-          <span style="color:var(--fg-2);font-family:var(--font-mono);font-size:11px">{{.Status}}</span>
-        </summary>
-        <div style="padding:10px 14px 14px 50px;background:var(--bg-2);border-bottom:1px solid var(--border)">
-          {{if .Rationale}}
-          <div style="margin-bottom:10px">
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Rationale</div>
-            <div style="font-style:italic;color:var(--fg-1);font-size:12.5px;line-height:1.55;max-width:780px">{{.Rationale}}</div>
-          </div>
-          {{end}}
-          <div style="margin-bottom:10px">
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Input</div>
-            <pre style="font-size:11.5px;margin:0">{{prettyJSON (printf "%s" .InputJSON | bytesOf)}}</pre>
-          </div>
-          {{if .ResultJSON.Valid}}
-          <div>
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Result</div>
-            <pre style="font-size:11.5px;margin:0;max-height:260px;overflow:auto">{{prettyJSON (printf "%s" .ResultJSON.String | bytesOf)}}</pre>
-          </div>
-          {{end}}
-        </div>
-      </details>
     {{else}}
-      <div class="empty" style="padding:18px">No tool calls recorded yet.</div>
+    <details class="auto-pop">
+      <summary class="btn sm ghost" title="Automation applies to this investigation only">⚙ Automation{{if .Inv.AutoApprove}} · auto-approve all{{else}} · manual{{end}}</summary>
+      <div class="auto-pop-body">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:10px">Automation · this investigation only</div>
+        <form method="post" action="/investigations/autonomous" style="margin:0 0 12px;padding-bottom:12px;border-bottom:1px solid var(--border)" title="Run autonomously within a step/token budget — no per-step confirmation; pauses for review when the budget is spent">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <input type="hidden" name="action" value="arm">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="color:var(--accent);font-weight:600;font-size:12.5px">▶ Run autonomously</span><span class="chip" style="font-size:9px"><span class="v">recommended</span></span></div>
+          <div class="dim" style="font-size:11px;line-height:1.45;margin-bottom:8px">Auto-approves probes (no per-step confirmation) until this budget is spent, then pauses for your review.</div>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <input type="number" name="steps" min="0" max="500" value="15" aria-label="autonomous steps" style="width:52px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:11px;padding:4px 5px;border-radius:5px">
+            <span class="dim" style="font-size:10.5px">steps</span>
+            <input type="number" name="tokens" min="0" step="50000" value="300000" aria-label="autonomous tokens" style="width:84px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:11px;padding:4px 5px;border-radius:5px">
+            <span class="dim" style="font-size:10.5px">tokens</span>
+            <button class="btn sm primary" type="submit" style="margin-left:auto">Start</button>
+          </div>
+        </form>
+        <form method="post" action="/investigations/auto-approve" style="margin:0" title="Auto-approve every subsequent tool_call in this investigation — unbounded until you turn it off">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-weight:600;font-size:12.5px">⚡ Auto-approve all</span><span class="dim" style="font-size:10px">unbounded</span></div>
+          <div class="dim" style="font-size:11px;line-height:1.45;margin-bottom:8px">Every step runs with no confirmation until you turn it off — no budget guard.</div>
+          {{if .Inv.AutoApprove}}
+          <input type="hidden" name="on" value="0">
+          <button class="btn sm" type="submit" style="background:var(--accent-bg);border-color:var(--accent);color:var(--accent)">⚡ auto · on — click to turn off</button>
+          {{else}}
+          <input type="hidden" name="on" value="1">
+          <button class="btn sm ghost" type="submit">⚡ auto · off — turn on</button>
+          {{end}}
+        </form>
+      </div>
+    </details>
     {{end}}
+    {{end}}
+    <a class="btn sm ghost" href="/investigations/export/{{.Inv.ID}}">Export .md</a>
+    {{if .NotebookAvailable}}<a class="btn sm ghost" href="/investigations/notebook/{{.Inv.ID}}" title="Curated Markdown record of findings, conclusion, operator hypotheses and compaction memory">Notebook</a>{{end}}
+  </div>
+</header>
+{{end}}
+
+{{define "investigation_timeline_fragment"}}
+<div class="panel" style="min-width:0">
+  <div class="panel-hd">
+    <div class="hd-left">
+      <span>Actions timeline</span>
+      <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .ToolCalls}} step{{if ne (len .ToolCalls) 1}}s{{end}}{{if .Pending}} · 1 pending{{end}}</span>
     </div>
   </div>
 
-  <!-- ════════════ COL 2: FINDINGS + HYPOTHESIS + CONTEXT ════════════ -->
-  <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
-
-    <div class="panel">
-      <div class="panel-hd">
-        <div class="hd-left">
-          <span>Findings</span>
-          <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .Findings}}</span>
+  {{if .Pending}}
+  <div style="padding:10px 12px 4px;background:var(--bg-0)">
+    {{if eq .Pending.Tool "ask_operator"}}
+    {{/* The model is asking a question — give the operator a plain answer box.
+         Submitting delivers the answer as this tool_call's result and resumes. */}}
+    <div class="pending" data-variant="framed">
+      <div class="pending-hd">
+        <div class="title">
+          <span class="lbl" style="color:var(--accent)">◇ Model is asking</span>
+          <span class="muted mono" style="font-size:11px">· step {{.Pending.Seq}}</span>
+        </div>
+        <div class="meta-right"><span class="mono">{{shortID .Pending.ID 12}}</span></div>
+      </div>
+      <div class="pending-body">
+        {{$q := askQuestion .Pending.InputJSON}}
+        {{if $q}}<div style="color:var(--fg-0);font-size:13px;line-height:1.5;margin-bottom:8px">{{$q}}</div>{{end}}
+        {{if .Pending.Rationale}}<div class="pending-rationale md-body">{{md .Pending.Rationale}}</div>{{end}}
+        <form method="post" action="/investigations/answer" data-live-preserve onsubmit="var b=this.querySelector('button[type=submit]'); if(b){b.disabled=true; b.textContent='Sending…';}">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <input type="hidden" name="tool_call_id" value="{{.Pending.ID}}">
+          <div class="t-xs" style="color:var(--fg-3);text-transform:uppercase;letter-spacing:0.07em;margin:4px 0 5px;font-weight:600">Your answer</div>
+          <textarea name="answer" required class="pending-input" style="width:100%;min-height:80px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-size:12.5px;padding:9px;border-radius:6px" placeholder="Answer the model's question — it continues with your answer as the tool result."></textarea>
+          <div class="pending-actions" style="margin-top:12px">
+            <button class="btn primary" type="submit">Send answer</button>
+          </div>
+        </form>
+        <form method="post" action="/investigations/decide" data-live-preserve style="margin-top:8px;display:flex;gap:8px">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <input type="hidden" name="tool_call_id" value="{{.Pending.ID}}">
+          <button class="btn ghost" type="submit" name="decision" value="skip">Skip question</button>
+          <button class="btn danger-ghost" type="submit" name="decision" value="end">End investigation</button>
+        </form>
+      </div>
+    </div>
+    {{else if eq .Pending.Tool "mark_done"}}
+    {{/* The model proposes closing the investigation. This is a terminal hold:
+         the conclusion is held for the operator regardless of automation, and
+         under an armed auto-run it is the ONE call that pauses (probes keep
+         auto-approving) — by design (invariant 4). The generic raw-JSON approval
+         card gave no hint this was the FINAL close, so it read as a stuck probe.
+         Surface the proposed root cause + confidence and label the actions as a
+         close, with the full conclusion still editable. Gating is untouched. */}}
+    {{$armed := or (gt .Inv.AutoRunUntilSteps 0) (gt .Inv.AutoRunUntilTokens 0)}}
+    {{$concl := markDoneConclusion .Pending.InputJSON}}
+    <form method="post" action="/investigations/decide" class="pending" data-variant="framed" data-live-preserve>
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+      <input type="hidden" name="tool_call_id" value="{{.Pending.ID}}">
+      <div class="pending-hd">
+        <div class="title">
+          <span class="lbl" style="color:var(--ok)">◇ Conclusion — approve to close</span>
+          <span class="muted mono" style="font-size:11px">· step {{.Pending.Seq}}</span>
+        </div>
+        <div class="meta-right"><span class="mono">{{shortID .Pending.ID 12}}</span></div>
+      </div>
+      <div class="pending-body">
+        {{if $armed}}
+        <div style="font-size:12px;line-height:1.5;color:var(--fg-1);background:var(--accent-bg);border:1px solid var(--border-accent);border-radius:6px;padding:9px 11px;margin-bottom:10px">
+          ▶ <strong>Auto-run paused here for your review.</strong> The model wants to close this investigation — the final conclusion always waits for you, even on auto-run (probes keep auto-approving). Approve to finalize, or skip to keep it digging.
+        </div>
+        {{else}}
+        <div style="font-size:12px;line-height:1.5;color:var(--fg-1);margin-bottom:10px">The model proposes closing this investigation. Approve to finalize, or skip to keep it digging.</div>
+        {{end}}
+        {{with $concl}}
+        <div style="margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span class="t-xs" style="color:var(--fg-3);text-transform:uppercase;letter-spacing:0.07em;font-weight:600">Proposed root cause</span>
+            {{if .Confidence}}<span class="badge {{confidenceBadge .Confidence}}">{{.Confidence}}</span>{{end}}
+          </div>
+          <div class="md-body" style="color:var(--fg-0);font-size:12.5px;line-height:1.55;max-width:820px">{{if .RootCause}}{{md .RootCause}}{{else}}<span class="dim">(no root cause in the proposal)</span>{{end}}</div>
+        </div>
+        {{end}}
+        {{if .Pending.Rationale}}<div class="pending-rationale md-body">{{md .Pending.Rationale}}</div>{{end}}
+        <div class="t-xs" style="color:var(--fg-3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:5px;font-weight:600">Full conclusion (editable)</div>
+        <textarea name="new_input_json" class="pending-input" style="width:100%;min-height:90px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:12px">{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</textarea>
+        <div class="pending-actions" style="margin-top:12px">
+          <button class="btn primary" type="submit" name="decision" value="approve">Approve &amp; close</button>
+          <button class="btn" type="submit" name="decision" value="edit">Edit &amp; close</button>
+          <button class="btn ghost" type="submit" name="decision" value="skip">Skip — keep going</button>
+          <button class="btn danger-ghost" type="submit" name="decision" value="end">End investigation</button>
         </div>
       </div>
-      {{if .Findings}}
-      <div>
-        {{range .Findings}}
-        <div class="finding {{if .Pinned}}pinned{{end}} {{if .Ignored}}ignored{{end}}" id="{{.ID}}">
-          <div class="f-mark">{{if .Pinned}}📌{{end}}{{if .Ignored}}🚫{{end}}</div>
-          <div class="f-body">
-            <div class="f-row">
-              {{if eq .Severity "critical"}}<span class="badge critical">critical</span>
-              {{else if eq .Severity "error"}}<span class="badge err">error</span>
-              {{else if eq .Severity "warn"}}<span class="badge warn">warn</span>
-              {{else}}<span class="badge info">info</span>{{end}}
-              <span class="f-code">{{.Code}}</span>
-              <span class="muted" style="font-family:var(--font-mono);font-size:10.5px;margin-left:auto">{{.CreatedAt.UTC.Format "15:04"}}</span>
-            </div>
-            <div class="f-msg">{{.Message}}</div>
-            {{if .EvidenceJSON}}
-            <details class="f-ev">
-              <summary>evidence</summary>
-              <pre style="margin-top:4px;font-size:10.5px">{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre>
-            </details>
-            {{end}}
-            <div style="display:flex;gap:6px;margin-top:6px">
-              <form method="post" action="/findings/{{.ID}}/{{if .Pinned}}unpin{{else}}pin{{end}}" style="display:inline">
-                <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                <button class="btn xs ghost" type="submit">{{if .Pinned}}unpin{{else}}pin{{end}}</button>
-              </form>
-              <form method="post" action="/findings/{{.ID}}/{{if .Ignored}}unignore{{else}}ignore{{end}}" style="display:inline">
-                <input type="hidden" name="csrf" value="{{$.CSRF}}">
-                <button class="btn xs ghost" type="submit">{{if .Ignored}}restore{{else}}ignore{{end}}</button>
-              </form>
-            </div>
+    </form>
+    {{else}}
+    <form method="post" action="/investigations/decide" class="pending" data-variant="framed" data-live-preserve>
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+      <input type="hidden" name="tool_call_id" value="{{.Pending.ID}}">
+      <div class="pending-hd">
+        <div class="title">
+          <span class="lbl">◇ Pending approval</span>
+          <span>{{.Pending.Tool}}</span>
+          <span class="muted mono" style="font-size:11px">· step {{.Pending.Seq}}</span>
+        </div>
+        <div class="meta-right">
+          <span class="mono">{{shortID .Pending.ID 12}}</span>
+        </div>
+      </div>
+      <div class="pending-body">
+        {{if .Pending.Rationale}}<div class="pending-rationale md-body">{{md .Pending.Rationale}}</div>{{end}}
+        <div class="t-xs" style="color:var(--fg-3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:5px;font-weight:600">Input</div>
+        <textarea name="new_input_json" class="pending-input" style="width:100%;min-height:90px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:12px">{{prettyJSON (printf "%s" .Pending.InputJSON | bytesOf)}}</textarea>
+        <div class="pending-actions" style="margin-top:12px">
+          <button class="btn primary" type="submit" name="decision" value="approve">Approve</button>
+          <button class="btn" type="submit" name="decision" value="edit">Edit & Approve</button>
+          <button class="btn ghost" type="submit" name="decision" value="skip">Skip</button>
+          <button class="btn danger-ghost" type="submit" name="decision" value="end">End investigation</button>
+        </div>
+      </div>
+    </form>
+    {{end}}
+  </div>
+  {{else if eq .Inv.Status "active"}}
+  <div style="padding:14px 14px 10px;color:var(--fg-2);font-size:12px;font-style:italic"><span class="dot pending pulse" style="margin-right:6px"></span>Waiting for the model.</div>
+  {{else if eq .Inv.Status "paused"}}
+  <div style="padding:10px 12px 4px;background:var(--bg-0)">
+    <div class="card" style="border-color:color-mix(in oklab, var(--warn) 50%, var(--border));background:var(--warn-bg);padding:14px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--warn);font-weight:600;margin-bottom:6px">Budget exhausted — what next?</div>
+      <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55;margin-bottom:12px">
+        Used <span class="mono" style="color:var(--fg-0)">{{compactNum .UsedTokens}}</span> of <span class="mono" style="color:var(--fg-0)">{{compactNum .MaxTokens}}</span> tokens · <span class="mono" style="color:var(--fg-0)">{{.Inv.TotalToolCalls}}</span> of <span class="mono" style="color:var(--fg-0)">{{.MaxSteps}}</span> steps. The investigator paused — choose to keep digging or wrap up with what we've got.
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <form method="post" action="/investigations/extend" style="margin:0">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <input type="hidden" name="extra_tokens" value="500000">
+          <input type="hidden" name="extra_steps" value="10">
+          <button class="btn primary" type="submit">+ 500k tokens · continue</button>
+        </form>
+        <form method="post" action="/investigations/finalize" style="margin:0">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <button class="btn" type="submit">Stop · summarise + "look here next"</button>
+        </form>
+        <form method="post" action="/investigations/autonomous" style="margin:0;display:flex;align-items:center;gap:4px" title="Grant this step/token budget and run autonomously — no per-step confirmation; pauses again for review when spent">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <input type="hidden" name="action" value="arm">
+          <input type="number" name="steps" min="0" max="500" value="15" aria-label="autonomous steps" style="width:50px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:11px;padding:5px 6px;border-radius:5px">
+          <input type="number" name="tokens" min="0" step="50000" value="500000" aria-label="autonomous tokens" style="width:84px;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-family:var(--font-mono);font-size:11px;padding:5px 6px;border-radius:5px">
+          <button class="btn" type="submit">▶ run autonomously</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {{else if eq .Inv.Status "aborted"}}
+  <div style="padding:10px 12px 4px;background:var(--bg-0)">
+    {{if .ContinueFlash}}
+    <div class="card" style="border-color:color-mix(in oklab, var(--err) 45%, var(--border));background:var(--err-bg);padding:12px;margin-bottom:10px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--err);font-weight:600;margin-bottom:5px">Continue blocked</div>
+      <div style="color:var(--fg-1);font-size:12.5px;line-height:1.5">{{.ContinueFlash}}</div>
+    </div>
+    {{end}}
+    {{/* One cohesive panel for the whole aborted state (was three stacked red
+         cards offering two competing primary CTAs). The reason is shown once at
+         the top; below it sits a SINGLE recommended action. For a transient
+         failure that is "Retry last step" (a free re-send of the identical
+         request) and "continue" is demoted under a disclosure, so the operator
+         never faces retry-vs-continue as equals. When only continue is possible
+         it is the primary action directly. */}}
+    <div class="card" style="border-color:color-mix(in oklab, var(--err) 45%, var(--border));background:var(--bg-1);padding:0;overflow:hidden">
+      {{if .Terminal.Present}}
+      <div style="padding:14px 14px 12px;border-bottom:1px solid var(--border);background:var(--err-bg)">
+        <div style="display:flex;align-items:flex-start;gap:12px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--err);font-weight:600;margin-bottom:6px">Aborted reason</div>
+            <div style="color:var(--fg-0);font-size:13px;line-height:1.5">{{.Terminal.Reason}}</div>
           </div>
+          {{if .Inv.SummaryJSON.Valid}}
+          <details style="flex:none;max-width:46%">
+            <summary style="cursor:pointer;color:var(--fg-2);font-size:11.5px;white-space:nowrap">raw terminal JSON</summary>
+            <pre style="margin:8px 0 0;font-size:11.5px;max-height:220px;overflow:auto">{{prettyJSON (printf "%s" .Inv.SummaryJSON.String | bytesOf)}}</pre>
+          </details>
+          {{end}}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <span class="chip"><span class="k">kind</span><span class="v mono">{{.Terminal.Kind}}</span></span>
+          <span class="chip"><span class="k">source</span><span class="v mono">{{.Terminal.Source}}</span></span>
+          <span class="chip"><span class="k">recoverable</span><span class="v mono">{{.Terminal.Recoverable}}</span></span>
+        </div>
+        {{if .Terminal.Detail}}
+        <details style="margin-top:8px">
+          <summary style="cursor:pointer;color:var(--fg-2);font-size:11px">details</summary>
+          <div style="color:var(--fg-1);font-size:12px;line-height:1.5;margin-top:6px">{{.Terminal.Detail}}</div>
+        </details>
+        {{end}}
+      </div>
+      {{end}}
+      <div style="padding:14px">
+      {{if .CanRetryTransient}}
+        <form method="post" action="/investigations/retry" data-live-preserve onsubmit="var b=this.querySelector('button[type=submit]'); if(b){b.disabled=true; b.textContent='Retrying…';}">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--ok);font-weight:600;margin-bottom:6px">Recommended</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button class="btn primary" type="submit">↻ Retry last step</button>
+            <span class="dim" style="font-size:11px">Re-sends the identical request — transient network / 5xx / rate-limit. No operator turn consumed.</span>
+          </div>
+        </form>
+        {{if .CanContinueAborted}}
+        <details style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
+          <summary style="cursor:pointer;color:var(--fg-2);font-size:12px">or steer it instead — reopen and tell the model what to do next</summary>
+          <form method="post" action="/investigations/continue" data-live-preserve style="margin-top:10px" onsubmit="var b=this.querySelector('button[type=submit]'); if(b){b.disabled=true; b.textContent='Continuing…';}">
+            <input type="hidden" name="csrf" value="{{.CSRF}}">
+            <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+            <textarea name="message" rows="3" required style="width:100%;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-size:12.5px;padding:9px;border-radius:6px" placeholder="{{.ContinuePlaceholder}}"></textarea>
+            <div style="margin-top:10px"><button class="btn" type="submit">Continue investigation</button></div>
+          </form>
+        </details>
+        {{end}}
+      {{else if .CanContinueAborted}}
+        <form method="post" action="/investigations/continue" data-live-preserve onsubmit="var b=this.querySelector('button[type=submit]'); if(b){b.disabled=true; b.textContent='Continuing…';}">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
+          <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55;margin-bottom:10px">Reopen this investigation with the existing evidence and tell the model what to do next.</div>
+          <textarea name="message" rows="3" required style="width:100%;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-size:12.5px;padding:9px;border-radius:6px" placeholder="{{.ContinuePlaceholder}}"></textarea>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+            <button class="btn primary" type="submit">Continue investigation</button>
+            <span class="dim" style="font-size:11px">Done investigations stay closed; use this for aborted runs only.</span>
+          </div>
+        </form>
+      {{else if .Investigator.Enabled}}
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--err);font-weight:600;margin-bottom:6px">Cannot continue automatically</div>
+        <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55">
+          This terminal state is marked non-recoverable. Start a new investigation if you need to continue with a corrected goal or restored history.
+        </div>
+      {{else}}
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--err);font-weight:600;margin-bottom:6px">Aborted — LLM unavailable</div>
+        <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55;margin-bottom:10px">
+          Continuation requires a configured LLM client and a hub restart. Current reason: <span class="mono" style="color:var(--fg-0)">{{.Investigator.DisabledReason}}</span>.
+        </div>
+        <div style="display:grid;grid-template-columns:160px 1fr;gap:5px 10px;font-family:var(--font-mono);font-size:11.5px;color:var(--fg-1);margin-bottom:10px">
+          <span class="muted">required key</span><span>RECON_LLM_API_KEY</span>
+          <span class="muted">endpoint override</span><span>RECON_LLM_BASE_URL</span>
+          <span class="muted">model override</span><span>RECON_LLM_MODEL</span>
+          <span class="muted">confirm logs</span><span>LLM client ready / LLM client disabled</span>
+        </div>
+        <div class="dim" style="font-size:11px;line-height:1.45">{{.Investigator.ConfigHint}}</div>
+      {{end}}
+      </div>
+    </div>
+  </div>
+  {{else if eq .Inv.Status "done"}}
+  <div style="padding:10px 12px 4px;background:var(--bg-0)">
+    {{/* Prominent Conclusion/Diagnosis card. Done investigations previously
+         surfaced their conclusion only as a raw-JSON panel dead-last in the
+         side fragment + a tiny notebook link; the rich diagnosis now leads the
+         done view. Rendered from the structured mark_done summary the hub
+         already holds (Terminal.Summary) — nil for legacy / budget_finalize /
+         operator_end rows, in which case this whole block is skipped. */}}
+    {{with .Terminal.Summary}}
+    <div class="card" style="border-color:color-mix(in oklab, var(--ok) 45%, var(--border));background:var(--bg-1);padding:0;overflow:hidden;margin-bottom:10px">
+      <div style="padding:14px;border-bottom:1px solid var(--border);background:color-mix(in oklab, var(--ok) 7%, var(--bg-1))">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:7px">
+          <span style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ok);font-weight:600">Conclusion</span>
+          {{if .Confidence}}<span class="badge {{confidenceBadge .Confidence}}">{{.Confidence}}</span>{{end}}
+        </div>
+        <div class="md-body" style="color:var(--fg-0);font-size:13.5px;line-height:1.6;max-width:840px">{{if .RootCause}}{{md .RootCause}}{{else}}<span class="dim">No root cause recorded.</span>{{end}}</div>
+        {{if .RootCauseExplains}}
+        <div class="md-inline" style="color:var(--fg-1);font-size:12px;line-height:1.5;margin-top:8px"><span class="muted">explains symptom:</span> {{mdLine .RootCauseExplains}}</div>
+        {{end}}
+      </div>
+      <div style="padding:12px 14px;display:flex;flex-direction:column;gap:13px">
+        {{if .Symptoms}}
+        <div>
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:5px">Symptoms observed</div>
+          <ul class="md-inline" style="margin:0;padding-left:18px;color:var(--fg-1);font-size:12.5px;line-height:1.6">{{range .Symptoms}}<li>{{mdLine .}}</li>{{end}}</ul>
+        </div>
+        {{end}}
+        {{if .RecommendedRemediation}}
+        <div>
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:5px">Recommended remediation</div>
+          <div class="md-body" style="color:var(--fg-1);font-size:12.5px;line-height:1.6;max-width:840px">{{md .RecommendedRemediation}}</div>
+        </div>
+        {{end}}
+        {{if .WhereToLookNext}}
+        <div>
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:5px">Where to look next</div>
+          <ul class="md-inline" style="margin:0;padding-left:18px;color:var(--fg-1);font-size:12.5px;line-height:1.6">{{range .WhereToLookNext}}<li>{{mdLine .}}</li>{{end}}</ul>
+        </div>
+        {{end}}
+        {{if .HostsExamined}}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600">Hosts</span>
+          {{range .HostsExamined}}<span class="chip"><span class="v mono">{{.}}</span></span>{{end}}
+        </div>
+        {{end}}
+        {{if .EvidenceRefs}}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600">Evidence</span>
+          {{range .EvidenceRefs}}<a href="#ev-{{.}}" class="mono" style="font-size:11px;color:var(--accent);text-decoration:none;border:1px solid var(--border);border-radius:5px;padding:2px 7px" title="{{.}}">{{shortID . 10}}</a>{{end}}
         </div>
         {{end}}
       </div>
-      {{else}}
-      <div class="empty" style="padding:18px 14px">No findings yet.</div>
-      {{end}}
     </div>
-
-    {{if and (ne .Inv.Status "done") (ne .Inv.Status "aborted")}}
-    <form method="post" action="/investigations/hypothesis" class="hyp-card">
+    {{end}}
+    {{if .ContinueFlash}}
+    <div class="card" style="border-color:color-mix(in oklab, var(--err) 45%, var(--border));background:var(--err-bg);padding:12px;margin-bottom:10px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--err);font-weight:600;margin-bottom:5px">Continue blocked</div>
+      <div style="color:var(--fg-1);font-size:12.5px;line-height:1.5">{{.ContinueFlash}}</div>
+    </div>
+    {{end}}
+    {{if .CanContinueDone}}
+    <form method="post" action="/investigations/continue" class="card" style="border-color:color-mix(in oklab, var(--ok) 45%, var(--border));background:var(--bg-1);padding:14px" data-live-preserve onsubmit="var b=this.querySelector('button[type=submit]'); if(b){b.disabled=true; b.textContent='Continuing…';}">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="investigation_id" value="{{.Inv.ID}}">
-      <div class="hyp-hd">⚠ Direct the model</div>
-      <div class="muted t-xs" style="margin-bottom:10px;line-height:1.5">
-        Replaces the current pending step. Claude must verify the claim before continuing.
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ok);font-weight:600;margin-bottom:6px">Completed — continue investigation</div>
+      <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55;margin-bottom:10px">
+        Reopen this completed investigation in place. The prior conclusion is preserved and handed to the model as a starting point — tell it what to dig into next.
       </div>
-      <label>Claim (required)</label>
-      <textarea name="claim" rows="2" required placeholder="kube-controller-manager stopped auto-renewing certs"></textarea>
-      <label>Expected evidence</label>
-      <input type="text" name="expected" placeholder="check expiration date of /etc/kubernetes/pki/apiserver.crt">
-      <label>Instruction</label>
-      <input type="text" name="instruction" placeholder="verify before continuing other branches">
-      <div style="display:flex;gap:6px;margin-top:8px">
-        <button class="btn sm" type="submit" style="background:var(--pending);color:#0a0b0d;border-color:var(--pending);font-weight:600">Inject</button>
+      <textarea name="message" rows="3" required style="width:100%;border:1px solid var(--border);background:var(--bg-0);color:var(--fg-0);font-size:12.5px;padding:9px;border-radius:6px" placeholder="e.g. the fix didn't hold — re-check the renewal timer and widen to the peer nodes"></textarea>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+        <button class="btn primary" type="submit">Continue investigation</button>
+        <span class="dim" style="font-size:11px">Reopens done → active; the original conclusion stays in the timeline.</span>
       </div>
     </form>
+    {{else}}
+    <div class="card" style="padding:14px">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);font-weight:600;margin-bottom:6px">Completed — LLM unavailable</div>
+      <div style="color:var(--fg-1);font-size:12.5px;line-height:1.55">
+        Continuing a completed investigation requires a configured LLM client and a hub restart. Current reason: <span class="mono" style="color:var(--fg-0)">{{.Investigator.DisabledReason}}</span>.
+      </div>
+    </div>
     {{end}}
+  </div>
+  {{end}}
 
-    <div class="panel">
-      <div class="panel-hd"><span>Context</span></div>
-      <div style="padding:10px 14px;display:flex;flex-direction:column;gap:6px;font-size:12px;font-family:var(--font-mono)">
-        <div style="display:flex;justify-content:space-between"><span class="muted">tool calls</span><span style="color:var(--fg-0)">{{len .ToolCalls}}</span></div>
-        <div style="display:flex;justify-content:space-between"><span class="muted">findings</span><span style="color:var(--fg-0)">{{len .Findings}}</span></div>
-        <div style="display:flex;justify-content:space-between"><span class="muted">tokens used</span><span style="color:var(--fg-0)">{{compactNum .UsedTokens}}</span></div>
-        <div style="display:flex;justify-content:space-between;padding-top:6px;border-top:1px dashed var(--border);margin-top:2px">
-          <span class="muted">compaction</span><span style="color:var(--fg-2)">{{if .Inv.CompactionTokens}}{{compactNum .Inv.CompactionTokens}} tok{{else}}none{{end}}</span>
+  <div class="timeline">
+  {{range .ToolCalls}}
+    {{$st := .Status}}
+    {{$tlSt := "executed"}}
+    {{if eq $st "pending"}}{{$tlSt = "running"}}{{end}}
+    {{if or (eq $st "failed") (eq $st "aborted")}}{{$tlSt = "error"}}{{end}}
+    {{if eq $st "skipped"}}{{$tlSt = "skipped"}}{{end}}
+    {{if .TaskID.Valid}}{{range splitComma .TaskID.String}}<span id="ev-{{.}}" style="display:block;height:0;scroll-margin-top:64px"></span>{{end}}{{end}}
+    <details class="tl-row" data-status="{{$tlSt}}" style="display:block;cursor:pointer">
+      <summary style="display:grid;grid-template-columns:36px 28px 200px 1fr auto;align-items:center;gap:10px;padding:7px 12px;border-left:2px solid transparent;border-bottom:1px solid var(--border);font-size:12.5px;list-style:none;cursor:pointer">
+        <span style="color:var(--fg-3);font-family:var(--font-mono);font-size:11px;text-align:right">{{printf "%02d" .Seq}}</span>
+        <span style="display:flex;justify-content:center">
+          <span class="dot {{if eq $st "executed"}}ok{{else if eq $st "pending"}}pending pulse{{else if eq $st "skipped"}}offline{{else if or (eq $st "failed") (eq $st "aborted")}}err{{else}}info{{end}}"></span>
+        </span>
+        <span style="font-family:var(--font-mono);color:var(--fg-0);display:flex;align-items:center;gap:8px">
+          {{.Tool}}
+          {{if .TaskID.Valid}}<span class="dim" style="font-size:10.5px">{{shortID .TaskID.String 10}}</span>{{end}}
+        </span>
+        <span class="md-inline" style="color:var(--fg-1);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{if .Rationale}}{{mdLine .Rationale}}{{else}}<span class="dim">no rationale</span>{{end}}</span>
+        <span style="color:var(--fg-2);font-family:var(--font-mono);font-size:11px">{{.Status}}</span>
+      </summary>
+      <div style="padding:10px 14px 14px 50px;background:var(--bg-2);border-bottom:1px solid var(--border)">
+        {{if .Rationale}}
+        <div style="margin-bottom:10px">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Rationale</div>
+          <div class="md-inline" style="font-style:italic;color:var(--fg-1);font-size:12.5px;line-height:1.55;max-width:780px">{{mdLine .Rationale}}</div>
+        </div>
+        {{end}}
+        <div style="margin-bottom:10px">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Input</div>
+          <pre style="font-size:11.5px;margin:0">{{prettyJSON (printf "%s" .InputJSON | bytesOf)}}</pre>
+        </div>
+        {{if .ResultJSON.Valid}}
+        <div>
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.07em;color:var(--fg-3);font-weight:600;margin-bottom:4px">Result</div>
+          <pre style="font-size:11.5px;margin:0;max-height:260px;overflow:auto">{{prettyJSON (printf "%s" .ResultJSON.String | bytesOf)}}</pre>
+        </div>
+        {{end}}
+      </div>
+    </details>
+  {{else}}
+    <div class="empty" style="padding:18px">No tool calls recorded yet.</div>
+  {{end}}
+  </div>
+</div>
+{{end}}
+
+{{define "investigation_side_fragment"}}
+<div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+  <div class="panel">
+    <div class="panel-hd">
+      <div class="hd-left">
+        <span>Findings</span>
+        <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .Findings}}</span>
+      </div>
+    </div>
+    {{if .Findings}}
+    <div>
+      {{range .Findings}}
+      <div class="finding {{if .Pinned}}pinned{{end}} {{if .Ignored}}ignored{{end}}" id="{{.ID}}">
+        <div class="f-mark">{{if .Pinned}}📌{{end}}{{if .Ignored}}🚫{{end}}</div>
+        <div class="f-body">
+          <div class="f-row">
+            {{if eq .Severity "critical"}}<span class="badge critical">critical</span>
+            {{else if eq .Severity "error"}}<span class="badge err">error</span>
+            {{else if eq .Severity "warn"}}<span class="badge warn">warn</span>
+            {{else}}<span class="badge info">info</span>{{end}}
+            <span class="f-code">{{.Code}}</span>
+            <span class="f-time">{{formatUserTZ $.UserTZ .CreatedAt "15:04"}}</span>
+          </div>
+          <div class="f-msg md-inline">{{mdLine .Message}}</div>
+          {{if .EvidenceJSON}}
+          <details class="f-ev">
+            <summary>evidence</summary>
+            <pre>{{prettyJSON (printf "%s" .EvidenceJSON | bytesOf)}}</pre>
+          </details>
+          {{end}}
+          <div class="f-actions">
+            <form method="post" action="/findings/{{.ID}}/{{if .Pinned}}unpin{{else}}pin{{end}}" style="display:inline">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <button class="btn xs ghost" type="submit">{{if .Pinned}}unpin{{else}}pin{{end}}</button>
+            </form>
+            <form method="post" action="/findings/{{.ID}}/{{if .Ignored}}unignore{{else}}ignore{{end}}" style="display:inline">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <button class="btn xs ghost" type="submit">{{if .Ignored}}restore{{else}}ignore{{end}}</button>
+            </form>
+          </div>
         </div>
       </div>
+      {{end}}
     </div>
-
-    {{if .Inv.SummaryJSON.Valid}}
-    <div class="panel">
-      <div class="panel-hd"><span>Summary (mark_done)</span></div>
-      <div style="padding:10px 14px">
-        <pre style="margin:0;font-size:11.5px;max-height:400px;overflow:auto">{{prettyJSON (printf "%s" .Inv.SummaryJSON.String | bytesOf)}}</pre>
-      </div>
-    </div>
+    {{else}}
+    <div class="empty">No findings yet.</div>
     {{end}}
-
   </div>
 
-</section>
+  {{if and (ne .Inv.Status "done") (ne .Inv.Status "aborted")}}
+  {{/* Compact trigger (NOT a form): a live SSE/poll swap re-renders this node,
+       so CSRF + id ride on data-* and are read fresh at click time. The modal
+       is built on document.body, outside this fragment, so a swap can't kill
+       an open dialog. See ReconHypothesisModal in hub.js. */}}
+  <div class="hyp-trigger">
+    <div class="hyp-trigger-icon" aria-hidden="true">⚠</div>
+    <div class="hyp-trigger-body">
+      <div class="hyp-trigger-title">Direct the model</div>
+      <div class="hyp-trigger-desc">Override the pending step — inject a claim the model must verify first.</div>
+      <button type="button" class="btn sm hyp-trigger-btn"
+              data-hyp-open
+              data-csrf="{{.CSRF}}"
+              data-inv-id="{{.Inv.ID}}"
+              aria-haspopup="dialog">⚡ Inject hypothesis</button>
+    </div>
+  </div>
+  {{end}}
 
-{{if eq .Inv.Status "active"}}
-<script>
-(function() {
-  const es = new EventSource("/investigations/events/{{.Inv.ID}}");
-  const baseline = {{.InitSnap | printf "%q"}};
-  es.addEventListener("state-change", (e) => {
-    if (e.data !== baseline) { es.close(); window.location.reload(); }
-  });
-  es.addEventListener("bye", () => es.close());
-  // Live-pulse tick on every event so the operator sees the connection is alive
-  es.onmessage = () => {
-    const lp = document.getElementById('live-pulse');
-    if (lp) { lp.classList.add('tick'); setTimeout(() => lp.classList.remove('tick'), 400); }
-  };
-})();
-</script>
-{{end}}
+  <div class="panel">
+    <div class="panel-hd"><span>Context</span></div>
+    <div class="fields-list">
+      <div class="field"><span class="field-label">tool calls</span><span class="field-value">{{len .ToolCalls}}</span></div>
+      <div class="field"><span class="field-label">findings</span><span class="field-value">{{len .Findings}}</span></div>
+      <div class="field"><span class="field-label">tokens used</span><span class="field-value">{{compactNum .UsedTokens}}</span></div>
+      <div class="field sep"><span class="field-label">compaction</span><span class="field-value dim">{{if .Inv.CompactionTokens}}{{compactNum .Inv.CompactionTokens}} tok{{else}}none{{end}}</span></div>
+    </div>
+  </div>
+
+  {{if .Memories}}
+  <div class="panel">
+    <div class="panel-hd">
+      <div class="hd-left">
+        <span>Memory</span>
+        <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .Memories}}</span>
+      </div>
+    </div>
+    <div>
+      {{range .Memories}}
+      <div style="padding:10px 14px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+          <span class="chip"><span class="k">kind</span><span class="v mono">{{.Kind}}</span></span>
+          <span class="muted mono" style="font-size:10.5px;margin-left:auto">{{shortID .ID 12}}</span>
+        </div>
+        <div style="color:var(--fg-1);font-size:12px;line-height:1.45;max-height:90px;overflow:auto">{{.Content}}</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;font-family:var(--font-mono);font-size:10.5px;color:var(--fg-2)">
+          <span>seq {{.MessageSeqStart}}-{{.MessageSeqEnd}}</span>
+          <span>{{compactNum .TokenEstimate}} tok</span>
+          <span>{{formatUserTZ $.UserTZ .CreatedAt "15:04:05"}}</span>
+        </div>
+      </div>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{if .PriorsAttached}}
+  <div class="panel">
+    <div class="panel-hd">
+      <div class="hd-left">
+        <span>Prior investigations</span>
+        <span class="muted" style="font-family:var(--font-mono);text-transform:none;letter-spacing:0;font-size:11px">{{len .PriorsAttached}}</span>
+      </div>
+    </div>
+    <div style="padding:8px 14px 10px">
+      <div class="dim" style="font-size:10.5px;line-height:1.45;margin-bottom:8px">Conclusions from earlier investigations attached at start (auto by host + manual). Hints — re-verify.</div>
+      {{range .PriorsAttached}}
+      <div style="padding:7px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px">
+          {{if eq .Status "done"}}<span class="badge ok" style="font-size:9.5px">done</span>
+          {{else if eq .Status "aborted"}}<span class="badge err" style="font-size:9.5px">aborted</span>
+          {{else if .Status}}<span class="badge" style="font-size:9.5px">{{.Status}}</span>{{end}}
+          <a href="/investigations/{{.ID}}" class="mono" style="color:var(--accent);font-size:11.5px">{{shortID .ID 16}}</a>
+          <span class="dim mono" style="font-size:10.5px;margin-left:auto">{{.Date}}</span>
+        </div>
+        <div class="dim mono" style="font-size:10px;margin-top:2px">{{.Hosts}}{{if .Confidence}} · <span class="badge {{confidenceBadge .Confidence}}" style="font-size:9px">{{.Confidence}}</span>{{end}}</div>
+        {{if .RootCause}}
+        <div class="md-body prior-rc{{if gt (len .RootCause) 260}} rc-clamp{{end}}" style="color:var(--fg-1);font-size:12px;line-height:1.45;margin-top:4px">{{md .RootCause}}</div>
+        {{if gt (len .RootCause) 260}}<button type="button" class="rc-toggle" onclick="var d=this.previousElementSibling;this.textContent=d.classList.toggle('rc-clamp')?'show more':'show less'">show more</button>{{end}}
+        {{else}}<div class="dim" style="font-size:11.5px;line-height:1.4;margin-top:4px">findings attached (no final conclusion)</div>{{end}}
+      </div>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{if .Inv.SummaryJSON.Valid}}
+  <div class="panel">
+    <div class="panel-hd"><span>Summary (mark_done)</span></div>
+    <div style="padding:10px 14px">
+      <pre style="margin:0;font-size:11.5px;max-height:400px;overflow:auto">{{prettyJSON (printf "%s" .Inv.SummaryJSON.String | bytesOf)}}</pre>
+    </div>
+  </div>
+  {{end}}
+</div>
 {{end}}

@@ -20,13 +20,33 @@
     <div class="panel">
       <div class="panel-hd"><span>LLM endpoint</span></div>
       <div style="padding:14px;display:grid;grid-template-columns:130px 1fr;gap:8px 14px;font-family:var(--font-mono);font-size:12px">
+        <span class="muted">status</span><span style="color:var(--fg-0)">{{if .Investigator.Enabled}}ready{{else}}<span class="hint-error">disabled ({{.Investigator.DisabledReason}})</span>{{end}}</span>
         <span class="muted">model</span><span style="color:var(--fg-0)">{{if .Model}}{{.Model}}{{else}}<span class="hint-error">disabled</span>{{end}}</span>
         <span class="muted">base_url</span><span style="color:var(--fg-0);word-break:break-all">{{if .BaseURL}}{{.BaseURL}}{{else}}<span class="dim">—</span>{{end}}</span>
         <span class="muted">api_key</span><span style="color:var(--fg-1)">env <span class="mono dim">RECON_LLM_API_KEY</span></span>
+        {{if not .Investigator.Enabled}}<span class="muted">recovery</span><span style="color:var(--fg-1);white-space:normal">{{.Investigator.ConfigHint}}</span>{{end}}
         <span class="muted">temperature</span><span style="color:var(--fg-0)">0.0</span>
         <span class="muted">tool_choice</span><span style="color:var(--fg-0)">required</span>
       </div>
     </div>
+
+    {{if .LLMProfiles}}
+    <div class="panel">
+      <div class="panel-hd"><span>LLM profiles</span></div>
+      <div style="padding:0">
+        {{range .LLMProfiles}}
+        <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:130px 1fr;gap:6px 12px;font-family:var(--font-mono);font-size:12px">
+          <span class="muted">profile</span><span style="color:var(--fg-0)">{{.Name}} <span class="dim">({{.Role}})</span></span>
+          <span class="muted">model</span><span style="color:var(--fg-0);word-break:break-all">{{.Model}}</span>
+          <span class="muted">base_url</span><span style="color:var(--fg-1);word-break:break-all">{{.BaseURL}}</span>
+          <span class="muted">context</span><span style="color:var(--fg-0)">{{compactNum .ContextWindowTokens}} tokens{{if .ContextWindowFallback}} <span class="hint-error">fallback</span>{{end}}</span>
+          <span class="muted">max output</span><span style="color:var(--fg-0)">{{compactNum .MaxOutputTokens}} tokens</span>
+          <span class="muted">capabilities</span><span style="color:var(--fg-1)">tools={{.SupportsTools}} · prompt_cache={{.SupportsPromptCache}}</span>
+        </div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
 
     <div class="panel">
       <div class="panel-hd"><span>Budgets</span></div>

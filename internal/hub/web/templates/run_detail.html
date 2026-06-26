@@ -34,11 +34,11 @@
     </div>
     <div>
       <div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Started</div>
-      <div class="mono" style="color:var(--fg-0)">{{.Run.CreatedAt.UTC.Format "15:04:05"}}<span class="dim" style="margin-left:6px;font-size:10.5px">{{sinceUTC .Run.CreatedAt}}</span></div>
+      <div class="mono" style="color:var(--fg-0)">{{formatUserTZ $.UserTZ .Run.CreatedAt "15:04:05"}}<span class="dim" style="margin-left:6px;font-size:10.5px">{{sinceUTC .Run.CreatedAt}}</span></div>
     </div>
     <div>
       <div class="dim" style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">Finished</div>
-      <div class="mono" style="color:var(--fg-0)">{{if .Run.FinishedAt.Valid}}{{.Run.FinishedAt.Time.UTC.Format "15:04:05"}}{{else}}<span class="dim">—</span>{{end}}</div>
+      <div class="mono" style="color:var(--fg-0)">{{if .Run.FinishedAt.Valid}}{{formatUserTZ $.UserTZ .Run.FinishedAt.Time "15:04:05"}}{{else}}<span class="dim">—</span>{{end}}</div>
     </div>
   </div>
 </div>
