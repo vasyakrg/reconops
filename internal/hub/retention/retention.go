@@ -9,10 +9,17 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/vasyakrg/recon/internal/hub/store"
 )
+
+// investigationsSubdir is the artifact-root subtree holding investigation-
+// scoped artifacts (notebooks). It mirrors investigator.investigationsSubdir;
+// kept as a local literal so the retention package does not import the
+// heavier investigator package just for one constant.
+const investigationsSubdir = "investigations"
 
 type Worker struct {
 	store        *store.Store
@@ -54,6 +61,7 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) sweep(ctx context.Context) {
 	cutoff := time.Now().Add(-time.Duration(w.keepDays) * 24 * time.Hour)
 	w.cleanupArtifacts(ctx, cutoff)
+	w.cleanupInvestigationArtifacts(ctx, cutoff)
 	w.cleanupArchivedMessages(ctx, cutoff)
 }
 
@@ -69,6 +77,12 @@ func (w *Worker) cleanupArtifacts(ctx context.Context, cutoff time.Time) {
 	removed := 0
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		// Investigation-scoped artifacts live under <root>/investigations and
+		// have their own status-aware policy (cleanupInvestigationArtifacts).
+		// Never treat that subtree as an orphan task directory.
+		if e.Name() == investigationsSubdir {
 			continue
 		}
 		taskID := e.Name()
@@ -92,6 +106,70 @@ func (w *Worker) cleanupArtifacts(ctx context.Context, cutoff time.Time) {
 	}
 	if removed > 0 {
 		w.log.Info("retention: artifacts swept", "removed", removed, "cutoff", cutoff.Format(time.RFC3339))
+	}
+}
+
+// cleanupInvestigationArtifacts applies a status-aware policy to the
+// <root>/investigations/<investigation_id> subtree (notebooks, exports):
+//   - live investigation (active/waiting/paused): always keep.
+//   - terminal (done/aborted) within the retention window: keep.
+//   - terminal and older than cutoff: remove.
+//   - orphan (investigation row gone): fall back to directory mtime.
+//
+// It never deletes the artifact root or escapes it: directory names come
+// straight from os.ReadDir (single path elements) and traversal-looking
+// names are skipped defensively.
+func (w *Worker) cleanupInvestigationArtifacts(ctx context.Context, cutoff time.Time) {
+	base := filepath.Join(w.artifactRoot, investigationsSubdir)
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			w.log.Warn("retention: read investigations root", "err", err)
+		}
+		return
+	}
+	removed := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		invID := e.Name()
+		if invID == "." || invID == ".." || strings.ContainsAny(invID, `/\`) {
+			continue
+		}
+		dir := filepath.Join(base, invID)
+		inv, gerr := w.store.GetInvestigation(ctx, invID)
+		status := "orphan"
+		switch {
+		case gerr != nil:
+			// Orphan: keep while recent, else remove (covers manual dirs).
+			if info, ierr := e.Info(); ierr == nil && info.ModTime().After(cutoff) {
+				w.log.Debug("retention: investigation artifact kept",
+					"investigation_id", invID, "status", status, "action", "keep")
+				continue
+			}
+		case inv.Status == "active" || inv.Status == "waiting" || inv.Status == "paused":
+			w.log.Debug("retention: investigation artifact kept",
+				"investigation_id", invID, "status", inv.Status, "action", "keep")
+			continue
+		case inv.UpdatedAt.After(cutoff):
+			w.log.Debug("retention: investigation artifact kept",
+				"investigation_id", invID, "status", inv.Status, "action", "keep")
+			continue
+		default:
+			status = inv.Status
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			w.log.Warn("retention: remove investigation artifact dir", "dir", dir, "err", err)
+			continue
+		}
+		w.log.Debug("retention: investigation artifact removed",
+			"investigation_id", invID, "status", status, "action", "remove")
+		removed++
+	}
+	if removed > 0 {
+		w.log.Info("retention: investigation artifacts swept",
+			"removed", removed, "cutoff", cutoff.Format(time.RFC3339))
 	}
 }
 
