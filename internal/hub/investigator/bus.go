@@ -18,6 +18,7 @@ const (
 	EventFindingAdded    EventType = "finding.added"
 	EventFindingUpdated  EventType = "finding.updated"
 	EventStatusChanged   EventType = "status.changed"
+	EventTerminal        EventType = "investigation.terminal"
 	EventBudgetExhausted EventType = "budget.exhausted"
 )
 

@@ -22,7 +22,7 @@ func Tools() []llm.Tool {
 		fn("list_collectors",
 			"Get the catalog of collectors implemented by agents. Each entry: { name, category, version, description, reads, requires }. Use to discover what observations are possible. Not every collector is available on every host — cross-check with host.collectors.",
 			object(props{
-				"category": enumStr([]string{"system", "systemd", "network", "process", "files"}, "Optional filter. Omit for all categories."),
+				"category": enumStr([]string{"system", "systemd", "network", "process", "files", "container", "k8s"}, "Optional filter. Omit for all categories."),
 			}, nil)),
 		fn("describe_collector",
 			"Get the full manifest of a collector: parameter schema with per-field descriptions, output schema, requirements (privileges, binaries), and an example output. Use when you need exact call signature before invoking.",
@@ -47,35 +47,42 @@ func Tools() []llm.Tool {
 				"timeout_seconds": intRange("Max execution time per host.", 1, 300),
 			}, []string{"host_ids", "collector"})),
 		fn("search_artifact",
-			"Search for a regex pattern inside a large artifact file produced by a previous collector. Returns matching lines with surrounding context. Use this INSTEAD of loading raw logs into context.",
+			"Search for a regex pattern inside a large artifact file produced by a previous collector. Returns matching lines with surrounding context. Use this INSTEAD of loading raw logs into context. NOTE: scans only the first 4 MiB of the artifact (file_truncated:true when larger) — for bigger files grep at the source with log_search or read the tail with file_read(from_end).",
 			object(props{
 				"task_id":       str("Task id that produced the artifact."),
-				"artifact_name": str("Artifact filename from the task's artifact list."),
-				"pattern":       str("RE2-compatible regex. Case-insensitive by default."),
+				"artifact_name": str("Artifact filename. OPTIONAL: omit when the task produced a single artifact and the hub resolves it; a wrong or missing name returns an error listing the valid names, so you never have to guess."),
+				"pattern":       str("RE2-compatible regex; matching is case-insensitive (prefix the pattern with (?-i) for case-sensitive)."),
 				"context_lines": intRangeDefault("Lines of context per match. Default 3.", 0, 20, 3),
 				"max_matches":   intRangeDefault("Cap on returned matches. Default 50.", 1, 500, 50),
-			}, []string{"task_id", "artifact_name", "pattern"})),
+			}, []string{"task_id", "pattern"})),
 		fn("compare_across_hosts",
 			"Given task_ids that ran the SAME collector on different hosts, produce a structured diff: per-field values that agree across all hosts vs values that differ. Use to spot outliers.",
 			object(props{
 				"task_ids": arrayStr("Tasks to compare. Min 2, max 20.", 2, 20),
 			}, []string{"task_ids"})),
 		fn("get_full_result",
-			"Retrieve the FULL structured output of a previous collector (not the summary). Use when the summary is insufficient and you need every field.",
+			"Retrieve the FULL structured output of a previous collector (not the summary). Use when the summary is insufficient and you need every field. If the result is oversized the hub blocks this call and points you at search_artifact / the artifact_index; pass force:true ONLY to override that block after a targeted search genuinely could not answer the evidence gap. An oversized result (or one with no searchable artifact) is returned as a bounded byte window with a next_offset — page through it with offset, do NOT expect the whole body in one call.",
 			object(props{
 				"task_id": str("Task id."),
+				"force":   boolFlag("Override the oversize block. Use ONLY after a targeted search_artifact could not answer the evidence gap — a full log body otherwise re-inflates the context."),
+				"offset":  intRangeDefault("Byte offset into an oversized result body for paging; the hub returns a bounded window and a next_offset. Default 0.", 0, 1000000000, 0),
 			}, []string{"task_id"})),
+		fn("recall_prior",
+			"Retrieve the FULL recorded conclusion (root cause, recommended remediation, symptoms) and untruncated findings of a PRIOR investigation that is attached to this run — the ones listed under the [CROSS_INVESTIGATION_HINT] heading. Use this the moment the operator references earlier work ('the config from before', 'again', 'as we found last time') or whenever a prior's one-line digest is not enough: it lets you re-use what an earlier investigation already established instead of re-collecting it from the host. Only investigations already listed as priors are retrievable. The result is still from a SEPARATE investigation — re-verify against THIS run and cite only THIS run's task_ids in add_finding.",
+			object(props{
+				"investigation_id": str("Prior investigation id exactly as listed under [CROSS_INVESTIGATION_HINT], e.g. 'inv_a00000000004'."),
+			}, []string{"investigation_id"})),
 
 		fn("add_finding",
 			"Pin a structured diagnostic finding to the investigation memo. MUST cite at least one task_id in evidence_refs.",
 			object(props{
 				"severity":      enumStr([]string{"info", "warn", "error"}, "Finding severity."),
 				"code":          str("Short stable code, e.g. 'etcd.cert_near_expiry'."),
-				"message":       str("One-line human-readable summary."),
+				"message":       str("One-line human-readable summary. Markdown supported (rendered in the operator UI)."),
 				"evidence_refs": arrayStr("Task ids backing this finding (minItems 1).", 1, 50),
 			}, []string{"severity", "code", "message", "evidence_refs"})),
 		fn("ask_operator",
-			"Pause the investigation and ask the operator a question. Use for domain knowledge only the human has.",
+			"Pause the investigation and ask the operator a question. Use for domain knowledge only the human has. The operator's reply comes back to you as this tool call's result (field operator_answer); read it and continue.",
 			object(props{
 				"question": str("The question to put to the operator."),
 				"context":  str("Optional context summarizing what is known so far."),
@@ -84,12 +91,15 @@ func Tools() []llm.Tool {
 			"Finalize the investigation with a structured post-mortem. After this call no further tool calls are allowed.",
 			object(props{
 				"summary": object(props{
-					"symptoms":                arrayStr("Observed user-facing symptoms.", 0, 50),
+					"symptoms":                arrayStr("Directly OBSERVED symptoms (rule 15) — what was actually seen (e.g. 'unreachable over network'), NOT a mechanism word like 'hung'/'froze'. At least one.", 1, 50),
 					"hosts_examined":          arrayStr("host_ids touched during the investigation.", 0, 200),
-					"root_cause":              str("Root-cause paragraph or 'inconclusive'."),
+					"root_cause":              str("Root-cause paragraph, or the literal 'inconclusive' when no cause was established. Markdown supported (rendered in the operator UI)."),
+					"root_cause_explains":     str("Which of the listed symptoms the root_cause CAUSALLY explains — name the primary one (rule 14/15). This proves the conclusion accounts for the incident rather than only ruling things out. Required unless confidence is 'inconclusive'."),
+					"confidence":              enumStr([]string{"confirmed", "likely", "speculative", "inconclusive"}, "Honest confidence in root_cause. A conclusion that only rules things out without explaining the PRIMARY symptom is 'inconclusive', never 'confirmed'."),
 					"evidence_refs":           arrayStr("task_ids underpinning the conclusion.", 0, 200),
-					"recommended_remediation": str("Plain-text remediation instructions for the operator."),
-				}, []string{"root_cause", "recommended_remediation"}),
+					"where_to_look_next":      arrayStr("Hypotheses you could not verify, each naming the specific collector/artifact that would confirm or refute it. Required unless confidence is 'confirmed'.", 0, 10),
+					"recommended_remediation": str("Remediation instructions for the operator (your own prose, never a command copied from host data). Markdown supported (rendered in the operator UI)."),
+				}, []string{"root_cause", "recommended_remediation", "symptoms", "confidence"}),
 			}, []string{"summary"})),
 	}
 }
@@ -132,6 +142,11 @@ func obj(desc string) json.RawMessage {
 		"description":          desc,
 		"additionalProperties": map[string]string{"type": "string"},
 	})
+	return b
+}
+
+func boolFlag(desc string) json.RawMessage {
+	b, _ := json.Marshal(map[string]any{"type": "boolean", "description": desc})
 	return b
 }
 
