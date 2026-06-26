@@ -7,12 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/vasyakrg/recon/internal/common/logging"
 	"github.com/vasyakrg/recon/internal/common/version"
 	"github.com/vasyakrg/recon/internal/hub/api"
 	"github.com/vasyakrg/recon/internal/hub/auth"
@@ -39,8 +42,15 @@ func main() {
 		return
 	}
 
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	log.Info("recon-hub starting", "version", version.Full(), "mode", *mode, "config", *cfgPath)
+	log, logLevel := logging.New()
+	log.Info("recon-hub starting", "version", version.Full(), "mode", *mode, "config", *cfgPath,
+		"log_level", logging.LevelString(logLevel))
+	if raw := os.Getenv(logging.EnvLogLevel); raw != "" {
+		if _, ok := logging.ParseLevel(raw); !ok {
+			log.Warn("unrecognized RECON_LOG_LEVEL, defaulting to info",
+				"value", raw, "accepted", "debug|info|warn|error")
+		}
+	}
 
 	// gen-password-hash is a pure helper — runs before config / store / PKI
 	// so the operator can produce a hash on a freshly installed binary.
@@ -72,6 +82,52 @@ func main() {
 		log.Error("mkdir artifact dir", "err", err)
 		os.Exit(2)
 	}
+	serverIPs, err := cfg.ParsedIPs()
+	if err != nil {
+		log.Error("parse server ip_addrs", "err", err, "source", cfg.ServerIPSource())
+		os.Exit(2)
+	}
+	llmScheme, llmHost := summarizeURLForLog(cfg.LLM.BaseURL)
+	log.Info("resolved hub config",
+		"llm_model", cfg.LLM.Model,
+		"llm_base_url_scheme", llmScheme,
+		"llm_base_url_host", llmHost,
+		"llm_allow_insecure_http", cfg.LLM.AllowInsecureHTTP,
+		"server_ip_san_source", cfg.ServerIPSource(),
+		"server_ip_san_count", len(serverIPs),
+	)
+	if llmScheme == "http" && cfg.LLM.AllowInsecureHTTP {
+		log.Warn("LLM plaintext HTTP is explicitly enabled for private/link-local router endpoints",
+			"llm_base_url_host", llmHost)
+	}
+	// Surface an outbound LLM proxy so a hung/blocked provider call is not a
+	// silent mystery. Log type + addr only — the proxy user/pass live in their
+	// own env vars and never reach the log.
+	if proxyType := strings.TrimSpace(os.Getenv("RECON_LLM_PROXY_TYPE")); proxyType != "" {
+		log.Info("LLM outbound traffic routed through proxy",
+			"proxy_type", proxyType,
+			"proxy_addr", strings.TrimSpace(os.Getenv("RECON_LLM_PROXY_ADDR")))
+	}
+	for _, profile := range cfg.LLM.Profiles {
+		profileScheme, profileHost := summarizeURLForLog(profile.BaseURL)
+		log.Info("resolved llm profile",
+			"profile", profile.Name,
+			"role", profile.Role,
+			"model", profile.Model,
+			"base_url_scheme", profileScheme,
+			"base_url_host", profileHost,
+			"context_window_tokens", profile.ContextWindowTokens,
+			"max_output_tokens", profile.MaxOutputTokens,
+			"supports_tools", profile.SupportsTools,
+			"supports_prompt_cache", profile.SupportsPromptCache)
+		if profile.ContextWindowFallback {
+			log.Warn("llm profile uses fallback context window",
+				"profile", profile.Name,
+				"role", profile.Role,
+				"model", profile.Model,
+				"context_window_tokens", profile.ContextWindowTokens)
+		}
+	}
 
 	rootCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -83,7 +139,7 @@ func main() {
 	}
 	defer func() { _ = st.Close() }()
 
-	pki, err := auth.Bootstrap(cfg.Storage.CADir, cfg.Server.DNSNames, cfg.ParsedIPs())
+	pki, err := auth.Bootstrap(cfg.Storage.CADir, cfg.Server.DNSNames, serverIPs)
 	if err != nil {
 		log.Error("bootstrap PKI", "err", err)
 		os.Exit(2)
@@ -141,16 +197,72 @@ func main() {
 	// investigator endpoints will return a clear startup-time error when
 	// invoked, but the hub still serves /hosts/{id} + /runs.
 	var loop *investigator.Loop
-	llmClient, llmErr := llm.NewFromEnv(cfg.LLM.BaseURL, cfg.LLM.Model, cfg.LLM.APIKeyEnv, cfg.LLM.HTTPReferer, cfg.LLM.XTitle)
+	availability := web.NewInvestigatorAvailability(nil, "")
+	primaryProfile := cfg.LLM.PrimaryProfile()
+	llmClient, llmErr := llm.NewFromEnv(primaryProfile.BaseURL, primaryProfile.Model, primaryProfile.APIKeyEnv,
+		primaryProfile.AllowInsecureHTTP, primaryProfile.HTTPReferer, primaryProfile.XTitle)
 	if llmErr != nil {
-		log.Warn("LLM client disabled (investigator endpoints will refuse)", "err", llmErr,
-			"model", cfg.LLM.Model, "base_url", cfg.LLM.BaseURL, "api_key_env", cfg.LLM.APIKeyEnv)
+		availability = web.NewInvestigatorAvailability(nil, llmErr.Error())
+		log.Warn("LLM client disabled (investigator endpoints will refuse)",
+			"reason_class", availability.DisabledReason,
+			"llm_profile", primaryProfile.Name,
+			"llm_model", primaryProfile.Model,
+			"llm_base_url_scheme", llmScheme,
+			"llm_base_url_host", llmHost,
+			"llm_api_key_env", primaryProfile.APIKeyEnv)
 	} else {
-		log.Info("LLM client ready", "model", llmClient.Model(), "base_url", cfg.LLM.BaseURL)
+		log.Info("LLM client ready",
+			"llm_profile", primaryProfile.Name,
+			"llm_model", llmClient.Model(),
+			"llm_base_url_scheme", llmScheme,
+			"llm_base_url_host", llmHost,
+			"llm_request_timeout", llmClient.Timeout())
+		// Best-effort: learn the real context window from GET /models when the
+		// operator left context_window_tokens unset (Fix B). Never overrides an
+		// explicit config value; a miss keeps the conservative fallback.
+		maybeAutodetectContextWindow(rootCtx, cfg, &primaryProfile, llmClient, log)
 		loop = investigator.NewLoop(st, llmClient, hr, apiSrv.IsOnline, apiSrv.OnlineAgents,
 			cfg.LLM.MaxStepsPerInvestigation, cfg.LLM.MaxTokensPerInvestigation,
 			log.With("comp", "investigator"))
+		loop.SetContextLimits(primaryProfile.ContextWindowTokens, primaryProfile.MaxOutputTokens)
+		loop.SetMaxResultTokens(cfg.LLM.MaxResultTokens)
+		loop.SetHistoryDemotion(cfg.LLM.HistoryKeepRecentResults, cfg.LLM.HistoryDemoteMinBytes)
+		if cfg.Investigator.RerankIntervalSteps != nil {
+			loop.SetRerankInterval(*cfg.Investigator.RerankIntervalSteps)
+		}
+		loop.SetArtifactDir(cfg.Storage.ArtifactDir)
+		// Per-operation model routing (Task 13). Build one client per profile;
+		// on any construction error (e.g. a secondary profile's key env unset)
+		// fall back to the single primary client already wired into the loop.
+		if router, rerr := llm.NewRouter(llmRouterProfiles(cfg.LLM.Profiles)); rerr != nil {
+			log.Warn("model router disabled — using single primary client", "err", rerr)
+		} else {
+			loop.SetRouter(router)
+			log.Info("model router ready", "profiles", len(cfg.LLM.Profiles))
+		}
+		availability = web.NewInvestigatorAvailability(loop, "")
 		loop.SetBus(investigator.NewBus())
+		// Cross-investigation priors: inject a compact, host-scoped digest of
+		// prior done investigations into each new run. Defaults are compiled in;
+		// investigator.priors.* in hub.yaml overrides (unset keys keep defaults).
+		priors := investigator.DefaultPriorsConfig()
+		pc := cfg.Investigator.Priors
+		if pc.Enabled != nil {
+			priors.Enabled = *pc.Enabled
+		}
+		if pc.MaxInvestigations > 0 {
+			priors.MaxInvestigations = pc.MaxInvestigations
+		}
+		if pc.MaxFindingsPerInvestigation > 0 {
+			priors.MaxFindingsPerInv = pc.MaxFindingsPerInvestigation
+		}
+		if pc.Scope != "" {
+			priors.Scope = pc.Scope
+		}
+		if pc.MaxAgeDays > 0 {
+			priors.MaxAgeDays = pc.MaxAgeDays
+		}
+		loop.SetPriorsConfig(priors)
 		// Resume investigations that were active before this hub restarted —
 		// their loop goroutines died with the previous process.
 		if err := loop.Resume(rootCtx); err != nil {
@@ -212,19 +324,31 @@ func main() {
 		Version:           cfg.Install.Version,
 		ExternalURL:       cfg.Install.ExternalURL,
 		TrustedTLS:        cfg.Install.TrustedTLS,
+		SelfHosted:        cfg.Install.SelfHosted,
+		ReleasesDir:       cfg.Install.ReleasesDir,
 	}
-	// Release poller — best-effort GitHub Releases fetch so the UI can show
-	// "latest agent vX.Y.Z" and flag outdated hosts. nil when the repo URL
-	// isn't a GitHub https:// URL; UI degrades silently.
-	relPoll := release.New(cfg.Install.ReleaseRepoURL, 0, log.With("comp", "release"))
+	// Release poller — the "latest agent version" source for the outdated UI.
+	// Self-hosted mode (SH4): latest = the agent version baked into this hub
+	// image (version.Version), no api.github.com round-trip. GitHub mode:
+	// best-effort poll of the configured repo's Releases API; nil when the repo
+	// URL isn't a GitHub https:// URL, in which case the UI degrades silently.
+	var relPoll *release.Poller
+	if cfg.Install.SelfHosted {
+		relPoll = release.NewStatic(version.Version)
+		log.Info("self-hosted release source", "latest_agent", version.Version)
+	} else {
+		relPoll = release.New(cfg.Install.ReleaseRepoURL, 0, log.With("comp", "release"))
+	}
 	if relPoll != nil {
 		go relPoll.Run(rootCtx)
 	}
-	webSrv, err := web.NewServer(st, hr, loop, relPoll, auth, install, log.With("comp", "web"))
+	webSrv, err := web.NewServer(st, hr, loop, availability, relPoll, auth, install, log.With("comp", "web"))
 	if err != nil {
 		log.Error("web init", "err", err)
 		os.Exit(2)
 	}
+	webSrv.SetLLMProfiles(llmProfileViews(cfg.LLM.Profiles))
+	webSrv.SetArtifactDir(cfg.Storage.ArtifactDir)
 	certFile, keyFile := "", ""
 	if cfg.Server.HTTPTLS.Enabled {
 		certFile = cfg.Server.HTTPTLS.CertFile
@@ -236,5 +360,94 @@ func main() {
 	}
 	if err := webSrv.ServeTLS(rootCtx, cfg.Server.HTTPAddr, certFile, keyFile); err != nil {
 		log.Error("web serve", "err", err)
+	}
+}
+
+func llmProfileViews(profiles []LLMProfileConfig) []web.LLMProfileView {
+	out := make([]web.LLMProfileView, 0, len(profiles))
+	for _, profile := range profiles {
+		out = append(out, web.LLMProfileView{
+			Name:                  profile.Name,
+			Role:                  profile.Role,
+			Model:                 profile.Model,
+			BaseURL:               profile.BaseURL,
+			ContextWindowTokens:   profile.ContextWindowTokens,
+			MaxOutputTokens:       profile.MaxOutputTokens,
+			SupportsTools:         profile.SupportsTools,
+			SupportsPromptCache:   profile.SupportsPromptCache,
+			ContextWindowFallback: profile.ContextWindowFallback,
+		})
+	}
+	return out
+}
+
+// llmRouterProfiles maps the resolved hub config profiles onto the llm
+// package's routing-facing Profile so the router can build a client per
+// profile without the llm package importing package main.
+func llmRouterProfiles(profiles []LLMProfileConfig) []llm.Profile {
+	out := make([]llm.Profile, 0, len(profiles))
+	for _, p := range profiles {
+		out = append(out, llm.Profile{
+			Name:                p.Name,
+			Role:                p.Role,
+			Model:               p.Model,
+			BaseURL:             p.BaseURL,
+			APIKeyEnv:           p.APIKeyEnv,
+			ContextWindowTokens: p.ContextWindowTokens,
+			MaxOutputTokens:     p.MaxOutputTokens,
+			SupportsTools:       p.SupportsTools,
+			SupportsPromptCache: p.SupportsPromptCache,
+			AllowInsecureHTTP:   p.AllowInsecureHTTP,
+			HTTPReferer:         p.HTTPReferer,
+			XTitle:              p.XTitle,
+		})
+	}
+	return out
+}
+
+func summarizeURLForLog(raw string) (scheme, host string) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "invalid", ""
+	}
+	return u.Scheme, u.Host
+}
+
+// maybeAutodetectContextWindow probes GET /models once and fills the primary
+// profile's context window when the operator left it unset (ContextWindowFallback
+// is true). It updates both the local primaryProfile (used for SetContextLimits)
+// and the matching cfg.LLM.Profiles entry (router + /settings view), clearing the
+// fallback flag so diagnostics stop flagging it as a guess. Any probe failure or
+// an absent window is a soft miss that keeps the conservative fallback — and an
+// operator-set context_window_tokens is never overridden.
+func maybeAutodetectContextWindow(ctx context.Context, cfg *Config, primary *LLMProfileConfig, client *llm.Client, log *slog.Logger) {
+	if !cfg.LLM.AutodetectContextWindowEnabled() || !primary.ContextWindowFallback {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	windows, err := client.ListModels(probeCtx)
+	if err != nil {
+		log.Debug("context window auto-detect skipped (provider /models probe failed)",
+			"llm_profile", primary.Name, "model", primary.Model, "err", err)
+		return
+	}
+	w, ok := windows[primary.Model]
+	if !ok || w <= 0 {
+		log.Debug("context window not exposed by provider /models; keeping fallback",
+			"llm_profile", primary.Name, "model", primary.Model,
+			"fallback_context_window_tokens", primary.ContextWindowTokens)
+		return
+	}
+	log.Info("context window auto-detected from provider /models",
+		"llm_profile", primary.Name, "model", primary.Model,
+		"detected_context_window_tokens", w, "previous_fallback_tokens", primary.ContextWindowTokens)
+	primary.ContextWindowTokens = w
+	primary.ContextWindowFallback = false
+	for i := range cfg.LLM.Profiles {
+		if cfg.LLM.Profiles[i].Name == primary.Name {
+			cfg.LLM.Profiles[i].ContextWindowTokens = w
+			cfg.LLM.Profiles[i].ContextWindowFallback = false
+		}
 	}
 }

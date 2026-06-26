@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,6 +20,7 @@ import (
 	"github.com/vasyakrg/recon/internal/agent/conn"
 	"github.com/vasyakrg/recon/internal/agent/exec"
 	"github.com/vasyakrg/recon/internal/agent/update"
+	"github.com/vasyakrg/recon/internal/common/logging"
 	"github.com/vasyakrg/recon/internal/common/version"
 )
 
@@ -33,8 +33,15 @@ func main() {
 		return
 	}
 
-	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	log.Info("recon-agent starting", "version", version.Full(), "config", *cfgPath)
+	log, logLevel := logging.New()
+	log.Info("recon-agent starting", "version", version.Full(), "config", *cfgPath,
+		"log_level", logging.LevelString(logLevel))
+	if raw := os.Getenv(logging.EnvLogLevel); raw != "" {
+		if _, ok := logging.ParseLevel(raw); !ok {
+			log.Warn("unrecognized RECON_LOG_LEVEL, defaulting to info",
+				"value", raw, "accepted", "debug|info|warn|error")
+		}
+	}
 
 	// Register the exec gateway whitelist before any collector can run.
 	// Collectors that try to invoke binaries outside this list will panic
