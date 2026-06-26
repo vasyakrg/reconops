@@ -12,15 +12,20 @@ Real production agents run on the target hosts via the systemd unit
 (`deploy/systemd/recon-agent.service`), not in compose. The `agent`
 service is a convenience for local smoke testing the whole pipeline.
 
+> **No GPU required.** Log retrieval (artifact indexing + triage) is
+> deterministic and CPU-only — no embeddings, rerankers, or CUDA. The hub
+> image is a plain static Go binary; do not provision GPU nodes for Recon.
+
 ## 1. Bootstrap
 
 ```bash
 cp .env.example .env
 ```
 
-Set `RECON_ADMIN_PASSWORD=strong-password` and `RECON_LLM_API_KEY=sk-or-v1-…`
-in `.env`. The hub bcrypt-hashes the plaintext at startup — no separate
-`gen-password-hash` step required.
+Set `RECON_ADMIN_PASSWORD=strong-password`, `RECON_LLM_API_KEY=sk-or-v1-…`,
+and `RECON_HUB_IP_ADDRS=<hub-ip>[,<extra-ip>...]` in `.env`. The hub
+bcrypt-hashes the plaintext at startup — no separate `gen-password-hash`
+step required.
 
 If you'd rather hand out a pre-computed hash (CI, config management, etc.),
 set `RECON_ADMIN_PASSWORD_HASH` instead — it wins over the plaintext when
@@ -31,12 +36,32 @@ make compose-gen-hash PASSWORD='strong-password'
 ```
 
 > **Production note:** edit `deploy/docker/hub.yaml` *before* the first start to
-> add the hub's real DNS name(s) and IP(s) under `server.dns_names` /
-> `server.ip_addrs`. The bootstrap CA bakes them into the server cert and
-> changing them later means regenerating `/var/lib/recon/ca/`.
+> add the hub's real DNS name(s) under `server.dns_names`, and set the hub's
+> real IP SANs in `.env` with `RECON_HUB_IP_ADDRS`. The bootstrap CA bakes them
+> into the server cert and changing them later means regenerating
+> `/var/lib/recon/ca/`.
 >
 > Set `RECON_TLS_CN=<your hostname>` in `.env` so the nginx self-signed cert
 > matches. Or bind-mount your real cert at `/etc/nginx/certs/server.{crt,key}`.
+
+LLM endpoint overrides are also env-first: set `RECON_LLM_BASE_URL` and
+`RECON_LLM_MODEL` in `.env`. If the base URL is a private/link-local
+`http://` router IP, explicitly set `RECON_LLM_ALLOW_INSECURE_HTTP=true`;
+public plaintext provider URLs stay rejected.
+
+**Huge log arrays / token economy.** `llm.max_result_tokens` (env
+`RECON_LLM_MAX_RESULT_TOKENS`, default 2000) caps the per-tool-result tokens the
+model sees; fleet `collect_batch` surveys are rolled up across hosts and aged
+results are demoted to re-read pointers automatically. Tune
+`history_keep_recent_results` / `history_demote_min_bytes` in `hub.yaml`, and
+set `supports_prompt_cache: true` on a profile only when the backend honours
+Anthropic-style `cache_control` (OpenRouter → Anthropic). See the README
+“Token economy for huge log arrays” section.
+
+On startup, inspect the `resolved hub config` log line for non-secret effective
+values: `llm_model`, `llm_base_url_scheme`, `llm_base_url_host`,
+`llm_allow_insecure_http`, `server_ip_san_source`, and
+`server_ip_san_count`.
 
 ## 2. Up
 
@@ -124,3 +149,52 @@ docker compose up -d
 ```
 
 The hub re-applies SQLite migrations on start; the volume's data carries over.
+
+## 8. Troubleshoot 502s
+
+Separate reverse-proxy 502s from LLM-router 502s before changing nginx:
+
+- `docker logs recon-nginx` shows reverse-proxy status codes for browser paths
+  such as `/investigations/...` and `/investigations/events/...`.
+- `docker logs recon-hub` shows LLM upstream failures as `investigator step`
+  errors, for example `llm chat: llm http 502: ...`.
+
+If the upstream body says `No tool call found for function call output`, the
+hub now filters orphaned tool-result messages before the LLM request and logs
+`dropped orphan tool results ...` with the investigation ID. Continued 502s at
+the same timestamp should be investigated in the external router behind
+`RECON_LLM_BASE_URL`; also confirm `RECON_LLM_MODEL` is a model name that the
+router actually serves.
+
+## 9. Smoke aborted-investigation continuation
+
+Continuing an aborted investigation requires a live LLM client and a hub
+restart after config changes. Confirm one of these startup log states first:
+`LLM client ready`, or `LLM client disabled` with `reason_class`,
+`llm_model`, `llm_base_url_scheme`, and `llm_base_url_host`.
+
+Expected UI states:
+
+- `aborted` + LLM enabled -> `Continue investigation` form.
+- `aborted` + LLM disabled -> disabled recovery panel naming
+  `RECON_LLM_API_KEY`, `RECON_LLM_BASE_URL`, and `RECON_LLM_MODEL`.
+- `done` + LLM enabled -> `Continue investigation` reopens the completed run in
+  place (status returns to `active`, prior conclusion preserved).
+
+Smoke a deployed container with an authenticated browser session:
+
+```bash
+RECON_SMOKE_BASE_URL=https://127.0.0.1:8443 \
+RECON_SMOKE_INVESTIGATION_ID=inv_... \
+RECON_SMOKE_COOKIE_HEADER='recon_sid=...; recon_csrf=...' \
+RECON_SMOKE_CSRF_TOKEN='...' \
+RECON_SMOKE_EXPECT=disabled \
+  scripts/smoke/investigation-continue.sh
+```
+
+Run again with `RECON_SMOKE_EXPECT=enabled` after pointing
+`RECON_LLM_BASE_URL` at a working OpenAI-compatible endpoint and restarting the
+hub. The script prints request path, HTTP status, and high-level state; do not
+paste `.env`, API keys, or Authorization headers into smoke output. If it
+reports plaintext `investigator disabled`, update/restart the hub and inspect
+the startup log fields above.

@@ -30,6 +30,7 @@ type Poller struct {
 	interval time.Duration
 	http     *http.Client
 	log      *slog.Logger
+	static   bool // self-hosted: latest is fixed, Run() never polls (SH4)
 
 	mu        sync.RWMutex
 	latest    string    // e.g. "v0.1.4" — empty until first successful poll
@@ -67,10 +68,33 @@ func New(repoURL string, interval time.Duration, log *slog.Logger) *Poller {
 	}
 }
 
+// NewStatic returns a Poller whose Latest() always reports the given version
+// and which never touches the network — used in self-hosted mode (SH4), where
+// the "latest agent" IS the version baked into the hub image. ReleasesURL() is
+// empty (there is no GitHub releases page to link to); the UI renders the
+// version as plain text and builds update commands against the hub's own
+// /releases route. Returns nil for an empty version so the caller degrades to
+// "release info unavailable" rather than advertising a blank latest.
+func NewStatic(version string) *Poller {
+	if version == "" {
+		return nil
+	}
+	return &Poller{
+		static:    true,
+		latest:    version,
+		fetchedAt: time.Now().UTC(),
+	}
+}
+
 // Run blocks until ctx is done. First poll fires immediately; subsequent
 // polls fire on interval. Transient errors are logged + surfaced via Info().
+// A static (self-hosted) poller has nothing to poll — it just blocks.
 func (p *Poller) Run(ctx context.Context) {
 	if p == nil {
+		return
+	}
+	if p.static {
+		<-ctx.Done()
 		return
 	}
 	p.pollOnce(ctx)

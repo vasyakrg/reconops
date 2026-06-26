@@ -4,9 +4,13 @@
 //   - Opt-in per agent via `update.enabled: true` in /etc/recon/agent.yaml.
 //     Default false keeps the read-only-by-default invariant: agent never
 //     touches disk outside /var/lib/recon-agent unless the operator opts in.
-//   - Polls GitHub Releases API (no hub round-trip — hub doesn't push
-//     update commands; see HubMsg proto, which intentionally has no
-//     UpdateAgent verb).
+//   - Two release sources, selected automatically from update.repo_url:
+//     a GitHub repo URL (https://github.com/<owner>/<repo>) polls the GitHub
+//     Releases API; any other http(s) URL is treated as a self-hosting hub
+//     base and polls <base>/releases/latest, which the hub serves in the same
+//     GitHub-API JSON shape (SH3/SH6). Either way the agent reuses the exact
+//     same verified download→SHA256→atomic-swap path below — no hub round-trip
+//     beyond fetching artifacts (HubMsg has no UpdateAgent verb by design).
 //   - Downloads recon-agent-linux-<arch>.tar.gz, verifies SHA256 against
 //     checksums.txt published alongside the tarball, atomically replaces
 //     the binary on disk, then exits — systemd's Restart=on-failure /
@@ -51,13 +55,16 @@ type Updater struct {
 	current string
 }
 
-// New returns nil if opts are insufficient (disabled / bad repo URL) — the
-// caller treats nil as "updater disabled" and skips the goroutine.
+// New returns nil if opts are insufficient (disabled / unusable repo URL) —
+// the caller treats nil as "updater disabled" and skips the goroutine. The
+// release source is auto-detected from RepoURL: a GitHub repo URL targets the
+// GitHub Releases API; any other http(s) URL is treated as a self-hosting hub
+// base and targets <base>/releases/latest (SH6).
 func New(opts Options, log *slog.Logger) *Updater {
 	if opts.RepoURL == "" || opts.BinaryPath == "" {
 		return nil
 	}
-	owner, repo, ok := parseRepo(opts.RepoURL)
+	apiURL, ok := releaseAPIURL(opts.RepoURL)
 	if !ok {
 		return nil
 	}
@@ -66,11 +73,28 @@ func New(opts Options, log *slog.Logger) *Updater {
 	}
 	return &Updater{
 		opts:    opts,
-		apiURL:  fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo),
+		apiURL:  apiURL,
 		log:     log,
 		http:    &http.Client{Timeout: 2 * time.Minute}, // tarball download fits
 		current: version.Version,
 	}
+}
+
+// releaseAPIURL maps a configured repo URL to the "latest release" JSON
+// endpoint and reports whether it's usable. A GitHub repo URL
+// (https://github.com/<owner>/<repo>) → the GitHub Releases API. Any other
+// http(s):// URL → a self-hosted hub base, whose <base>/releases/latest route
+// returns the same GitHub-API-shaped JSON (hub mode, SH6). Anything else →
+// (\"\", false).
+func releaseAPIURL(repoURL string) (string, bool) {
+	if owner, repo, ok := parseRepo(repoURL); ok {
+		return fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo), true
+	}
+	u := strings.TrimRight(strings.TrimSpace(repoURL), "/")
+	if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
+		return u + "/releases/latest", true
+	}
+	return "", false
 }
 
 // Run blocks until ctx is done. Fires an immediate check on startup so a

@@ -81,13 +81,25 @@ func (s *Server) handleInstallAgentScript(w http.ResponseWriter, r *http.Request
 	if v := q.Get("version"); v != "" {
 		cfg.Version = v
 	}
+	// Resolve where the script downloads the tarball from and what the agent's
+	// self-updater will treat as its release origin. In self-hosted mode both
+	// point at the hub itself (its public base + /releases/...), derived from
+	// the request when external_url is empty — so the agent never needs GitHub.
+	// In GitHub mode they stay the configured repo URL.
+	downloadBase := cfg.DownloadBase()
+	releaseRepo := cfg.ReleaseRepoURL
+	if cfg.SelfHosted {
+		base := s.publicBase(r)
+		downloadBase = downloadBaseURL(base, cfg.Version)
+		releaseRepo = base
+	}
 	body := strings.NewReplacer(
 		"__TOKEN__", shellQuote(token),
 		"__AGENT_ID__", shellQuote(agentID),
 		"__HUB_ENDPOINT__", shellQuote(hubEP),
 		"__VERSION__", shellQuote(cfg.Version),
-		"__DOWNLOAD_BASE__", shellQuote(cfg.DownloadBase()),
-		"__RELEASE_REPO__", shellQuote(cfg.ReleaseRepoURL),
+		"__DOWNLOAD_BASE__", shellQuote(downloadBase),
+		"__RELEASE_REPO__", shellQuote(releaseRepo),
 	).Replace(installScriptTemplate)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -159,18 +171,7 @@ func (s *Server) handleQuickInstall(w http.ResponseWriter, r *http.Request) {
 	// 2. X-Forwarded-Host + X-Forwarded-Proto from nginx (depends on
 	//    nginx config preserving the port via $http_host).
 	// 3. r.Host + r.TLS — the bare loopback fallback.
-	base := strings.TrimRight(s.install.ExternalURL, "/")
-	if base == "" {
-		scheme := "http"
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-		host := r.Header.Get("X-Forwarded-Host")
-		if host == "" {
-			host = r.Host
-		}
-		base = scheme + "://" + host
-	}
+	base := s.publicBase(r)
 	scriptURL := fmt.Sprintf("%s/install/agent.sh?token=%s&id=%s", base, urlEscape(tok), urlEscape(agentID))
 	// curl flags depend on whether the hub is fronted by a CA-trusted
 	// cert. Default config is self-signed (`make compose-up`), so we

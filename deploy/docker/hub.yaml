@@ -1,17 +1,20 @@
+# Log verbosity is env-driven for BOTH binaries (hub + agent):
+# RECON_LOG_LEVEL=debug|info|warn|error (default info). It is not a yaml key —
+# set it in the container environment (.env). debug surfaces the auto-approve
+# decision trail ([FIX:auto-approve]) on prod without a rebuild; no PII in Debug.
 server:
   # Bind to all interfaces inside the container; docker publishes specific
   # ports on the host (see docker-compose.yml).
   grpc_addr: "0.0.0.0:9443"
   http_addr: "0.0.0.0:8080"
 
-  # SAN list baked into the bootstrap CA's server cert. Add your real
-  # hostname/IP here before the first start — they cannot be edited later
-  # without regenerating /var/lib/recon/ca/ca.pem.
-  # `hub` covers agents running inside the same compose network; the others
-  # cover the operator-on-host case. Add your real DNS name(s) here BEFORE
-  # the first `compose up` — changing them later means regenerating the CA.
+  # DNS SANs baked into the bootstrap CA's server cert. Add your real DNS
+  # names here before the first start. Changing SANs later requires
+  # regenerating /var/lib/recon/ca/.
   dns_names: ["hub", "localhost", "recon-hub", "nginx.recon.orb.local"]
-  ip_addrs: ["127.0.0.1", "192.168.8.121"]
+  # IP SANs are operator-facing in .env via RECON_HUB_IP_ADDRS. This fallback
+  # keeps local compose working when .env is absent.
+  ip_addrs: ["127.0.0.1"]
 
 storage:
   db_path: /var/lib/recon/recon.db
@@ -20,24 +23,123 @@ storage:
   retention_days: 7
 
 llm:
+  # RECON_LLM_BASE_URL / RECON_LLM_MODEL from .env override these defaults.
   base_url: https://openrouter.ai/api/v1
   model: anthropic/claude-sonnet-4.5
   api_key_env: RECON_LLM_API_KEY
+  # Docker/lab default allows private/link-local HTTP router IPs only.
+  # Public http:// providers and HTTP hostnames remain rejected.
+  allow_insecure_http: true
   max_steps_per_investigation: 12
   max_tokens_per_investigation: 500000
+  # --- Token economy for huge log arrays -----------------------------------
+  # max_result_tokens caps the assembled collect / collect_batch /
+  # search_artifact tool result the model sees (PROJECT.md §7.4 targets
+  # ~500–2000 tokens/result). A fleet-wide journal survey is rolled up across
+  # hosts and demoted to fit this cap; full data stays behind
+  # get_full_result(task_id) / search_artifact. 0 = compiled default (2000).
+  # Env override: RECON_LLM_MAX_RESULT_TOKENS.
+  max_result_tokens: 2000
+  # Aged tool results in the live context are collapsed to one-line re-read
+  # pointers (the stored history stays full). Keep the most recent N results
+  # verbatim, and only demote bodies larger than this many bytes. 0 = defaults
+  # (6 / 1024). Lowering keep-recent / min-bytes saves more context per turn at
+  # the cost of more re-reads.
+  history_keep_recent_results: 6
+  history_demote_min_bytes: 1024
+  # Best-effort context-window auto-detection (default true). At startup the hub
+  # probes GET {base_url}/models and, for profiles where you did NOT set
+  # context_window_tokens, fills it from the provider (OpenRouter context_length
+  # / vLLM max_model_len). Raw OpenAI exposes no window field → the conservative
+  # fallback is kept. An explicit context_window_tokens is never overridden. Set
+  # to false to skip the extra GET (air-gapped / strict deployments).
+  autodetect_context_window: true
+  # Optional multi-model routing. With no `profiles:` block the single model
+  # above is used for everything (backward-compatible). When set, the router
+  # picks a profile per operation by role and falls back to primary:
+  #   plan_next_step → primary (must support tools)
+  #   compact_memory → summarizer
+  #   log_triage_summary → cheap
+  #   verify_finding / final_summary → verifier
+  # Each profile needs a valid api_key_env or the router degrades to primary.
+  # profiles:
+  #   - name: primary
+  #     role: primary
+  #     model: anthropic/claude-sonnet-4.5
+  #     api_key_env: RECON_LLM_API_KEY
+  #     context_window_tokens: 200000
+  #     supports_tools: true
+  #     # supports_prompt_cache: when true AND the backend honours Anthropic-style
+  #     # cache_control (OpenRouter → Anthropic models), the hub sends a cache
+  #     # breakpoint on the stable system-prompt prefix so it is served from cache
+  #     # instead of re-billed every turn. OpenAI caches the stable prefix
+  #     # automatically (no breakpoint needed); leave this OFF for OpenAI/vLLM and
+  #     # any gateway that rejects unknown content fields. Effectiveness shows up
+  #     # as cached_tokens in the investigation API.
+  #     supports_prompt_cache: true
+  #   - name: summarizer
+  #     role: summarizer
+  #     model: anthropic/claude-haiku-4.5
+  #     api_key_env: RECON_LLM_API_KEY
+  #     context_window_tokens: 200000
+  #   - name: verifier            # optional third tier
+  #     role: verifier
+  #     model: anthropic/claude-sonnet-4.5
+  #     api_key_env: RECON_LLM_API_KEY
 
 runner:
   per_agent_rpm: 30
 
+# Cross-investigation priors: each NEW investigation is auto-seeded with a
+# compact, host-scoped digest of conclusions from prior `done` investigations,
+# so you don't re-walk a path an earlier run already covered. The digest is
+# bounded (hard token cap) and injected as a read-only "hints, re-verify" system
+# note; the evidence-first rule still blocks a prior conclusion from becoming a
+# finding on its own. Attached priors are shown on the investigation detail page
+# ("Prior investigations" panel) and can also be picked by hand on the
+# new-investigation form, which lists done/aborted/active runs (done attaches a
+# conclusion; aborted/active attach their findings). The automatic host-scoped
+# selection below stays done-only. Omit this block to keep the defaults shown.
+investigator:
+  # Differential re-rank checkpoint: after this many probing tool calls since the
+  # last checkpoint without a load-bearing finding, the loop injects a one-shot
+  # "step back and re-rank the differential" note to break tunnel vision (rule
+  # 14/15). Omit to keep the compiled-in default (8); set 0 to disable.
+  rerank_interval_steps: 8
+  priors:
+    enabled: true            # set false to disable priors injection entirely
+    max_investigations: 4    # cap how many prior investigations the digest names
+    max_findings_per_investigation: 3
+    scope: host_overlap      # host_overlap = only priors sharing a host (fleet-wide
+                             #   runs fall back to recency); recent_any = most recent
+    max_age_days: 30         # skip priors older than this
+
 install:
+  # self_hosted=true serves the agent (tarballs, checksums, and a
+  # GitHub-API-shaped releases/latest JSON) straight from this hub at
+  # /releases/... — no GitHub access needed for install or self-update. The
+  # agent is baked into the hub image at build time, so the served version is
+  # whatever RECON_VERSION the image was built with: set it to a real semver
+  # (env RECON_VERSION) or the outdated badge can't compare versions. Env:
+  # RECON_INSTALL_SELF_HOSTED. When false the GitHub path below is used.
+  self_hosted: false
+  # release_repo_url is the GitHub repo whose releases ship the agent tarball.
+  # Required in GitHub mode; may be left as-is or blank when self_hosted=true.
   release_repo_url: https://github.com/vasyakrg/reconops
-  # external_url is the public hub URL the install one-liner uses. Set
-  # this when the operator UI path and the agent network path differ —
-  # e.g. browser hits https://192.168.8.121 (orbstack auto-route on 443)
-  # but agents must reach the published nginx port https://192.168.8.121:8443.
-  # Empty falls back to deriving from the request, which only works when
-  # the same URL is reachable from both the browser and the agent.
-  external_url: https://192.168.8.121:8443
+  # releases_dir is where the hub reads self-hosted artifacts from. Defaults to
+  # the image bake path; override only for non-standard layouts. Env:
+  # RECON_INSTALL_RELEASES_DIR.
+  # releases_dir: /usr/local/share/recon/releases
+  # external_url is the public hub URL the install one-liner uses. Leave it
+  # EMPTY by default — the hub then derives the base from the operator's actual
+  # request (X-Forwarded-Host:port + X-Forwarded-Proto via nginx), so the
+  # one-liner points at whatever address the operator's browser hit. Pin it only
+  # when the operator browser path and the agent network path differ; the clean
+  # way to pin per-deployment is the RECON_INSTALL_EXTERNAL_URL env var (.env) —
+  # honoured whenever this value is empty. Do NOT hardcode a deployment-specific
+  # IP here: a stale value silently overrides .env and the request, rendering a
+  # wrong/internal address in the Quick install snippet.
+  external_url: ""
   # "auto" derives host:port from the install URL's request hostname
   # (honours nginx X-Forwarded-Host) plus grpc_port. Pin to an explicit
   # value (e.g. "hub.example.com:9443") if agents and the operator

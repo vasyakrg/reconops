@@ -46,3 +46,23 @@ func TestOutdated(t *testing.T) {
 		}
 	}
 }
+
+func TestNewStatic(t *testing.T) {
+	// Empty version → nil so the UI degrades to "unavailable" rather than
+	// advertising a blank latest.
+	if NewStatic("") != nil {
+		t.Fatal("NewStatic(\"\") should be nil")
+	}
+	p := NewStatic("0.4.2")
+	if p == nil {
+		t.Fatal("NewStatic returned nil for a real version")
+	}
+	got, ok := p.Latest()
+	if !ok || got != "0.4.2" {
+		t.Fatalf("Latest()=(%q,%v), want (0.4.2,true)", got, ok)
+	}
+	// No GitHub releases page in self-hosted mode.
+	if url := p.ReleasesURL(); url != "" {
+		t.Fatalf("ReleasesURL()=%q, want empty", url)
+	}
+}

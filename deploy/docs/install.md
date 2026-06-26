@@ -23,7 +23,7 @@ sudo install -d -m 0750 -o recon -g recon /var/lib/recon /etc/recon
 # Place the binary.
 sudo install -m 0755 recon-hub /usr/local/bin/
 
-# Config + env file (env holds secrets only).
+# Config + env file (env holds secrets and operator-facing deploy overrides).
 sudo install -m 0640 -o recon -g recon hub.yaml /etc/recon/hub.yaml
 sudo install -m 0600 -o recon -g recon hub.env  /etc/recon/hub.env
 ```
@@ -32,6 +32,10 @@ sudo install -m 0600 -o recon -g recon hub.env  /etc/recon/hub.env
 
 ```
 RECON_LLM_API_KEY=sk-or-v1-...
+RECON_LLM_BASE_URL=https://openrouter.ai/api/v1
+RECON_LLM_MODEL=anthropic/claude-sonnet-4.5
+RECON_LLM_ALLOW_INSECURE_HTTP=false
+RECON_HUB_IP_ADDRS=127.0.0.1,<hub-lan-ip>
 RECON_ADMIN_USER=admin
 RECON_ADMIN_PASSWORD_HASH=<see below>
 ```
@@ -56,6 +60,20 @@ The first start generates a self-signed CA in `/var/lib/recon/ca/` plus
 the server cert. Logs (`journalctl -u recon-hub`) print the listening
 addresses.
 
+`RECON_HUB_IP_ADDRS` overrides `server.ip_addrs` from `hub.yaml` and is the
+preferred place to manage IP SANs. Changing DNS or IP SANs after the CA/server
+leaf has been generated requires regenerating `/var/lib/recon/ca/`.
+
+`RECON_LLM_BASE_URL` and `RECON_LLM_MODEL` override `hub.yaml.llm.*`. If the
+base URL is a private/link-local `http://` router IP, set
+`RECON_LLM_ALLOW_INSECURE_HTTP=true`; public plaintext provider URLs remain
+rejected to avoid bearer-token leakage.
+
+Confirm effective non-secret config in the `resolved hub config` startup log:
+`llm_model`, `llm_base_url_scheme`, `llm_base_url_host`,
+`llm_allow_insecure_http`, `server_ip_san_source`, and
+`server_ip_san_count`.
+
 ## 2. Reverse proxy (nginx)
 
 If exposing the UI:
@@ -69,6 +87,15 @@ sudo systemctl reload nginx
 
 Open a browser, log in with the admin credentials. You should see an
 empty Hosts page.
+
+The shipped `recon.conf` already makes the live investigation channel work:
+the `^/investigations/events/` location sets `proxy_buffering off`,
+`proxy_read_timeout 6m`, `proxy_http_version 1.1`, and
+`chunked_transfer_encoding off`. If you adapt the config, keep those — without
+`proxy_buffering off` nginx withholds the SSE stream and investigation pages
+look stuck on "Waiting for the model." (the hub also sends
+`X-Accel-Buffering: no`). The approve-loop smoke check in §5 verifies the
+stream actually flows through the proxy.
 
 ## 3. Issue a bootstrap token (per agent)
 
@@ -149,7 +176,10 @@ In the UI:
 1. Open **/hosts** — your new agent shows `online`.
 2. Click the agent → **Run** beside `system_info` → results in <100 ms.
 3. **/investigations** → enter `find why nginx is restarting on app01`
-   → step-by-step approve/skip the model's tool calls.
+   → step-by-step approve/skip the model's tool calls. After each approve the
+   page advances on its own (no reload); if it sticks on "Waiting for the
+   model.", verify nginx has `proxy_buffering off` on the SSE path so the live
+   channel is not buffered.
 
 ## Common operations
 
@@ -159,4 +189,68 @@ In the UI:
 - **Rotate operator password**: regenerate the hash, edit `/etc/recon/hub.env`,
   `systemctl restart recon-hub`.
 - **Backup**: snapshot `/var/lib/recon/` (DB + CA + artifacts).
-- **Cost cap**: set `llm.max_tokens_per_investigation` in `hub.yaml`.
+- **Cost cap**: set `llm.max_tokens_per_investigation` in `hub.yaml`. This is
+  the spend budget, not the model context window; compaction triggers at 50%
+  of the per-profile `context_window_tokens`.
+- **Huge log arrays**: `llm.max_result_tokens` (env
+  `RECON_LLM_MAX_RESULT_TOKENS`, default 2000) bounds the tokens per
+  `collect` / `collect_batch` / `search_artifact` result. Fleet surveys over one
+  log collector are rolled up across hosts and aged results are demoted to
+  one-line re-read pointers (`history_keep_recent_results` /
+  `history_demote_min_bytes`); full data stays behind `get_full_result` /
+  `search_artifact`. The token estimate self-calibrates from the provider's
+  reported `prompt_tokens`. Operator metrics: `cached_tokens` and
+  `token_calibration_ratio` in `GET /api/v1/investigations/{id}`.
+- **Prompt caching**: set `supports_prompt_cache: true` on a profile only when
+  the backend honours Anthropic-style `cache_control` (e.g. OpenRouter →
+  Anthropic); OpenAI caches the stable prefix automatically. Leave it off for
+  OpenAI/vLLM. Effectiveness shows up as `cached_tokens`.
+- **Multi-model routing**: add `llm.profiles` (summarizer/cheap/verifier
+  tiers) to route cheaper models per operation. See the commented example in
+  `deploy/docker/hub.yaml` and "Investigation memory & model routing" in the
+  README. Notebooks live under `<artifact_dir>/investigations/<id>/notebook.md`
+  and follow the same retention window as the investigation.
+
+## Troubleshooting 502s
+
+Check which component emitted the 502 before changing proxy timeouts:
+
+- nginx 502s show up in nginx access/error logs for browser paths such as
+  `/investigations/...` or `/investigations/events/...`.
+- LLM router 502s show up in the hub journal as `investigator step` errors
+  containing `llm chat: llm http 502` and the upstream response body.
+
+For upstream errors such as `No tool call found for function call output`, the
+hub filters orphaned tool-result messages before sending the next LLM request
+and logs `dropped orphan tool results ...` with the investigation ID. If router
+502s continue, inspect the external router at `RECON_LLM_BASE_URL` for the same
+timestamp and verify `RECON_LLM_MODEL` is accepted by that router.
+
+## Continuing aborted and completed investigations
+
+Continuing an aborted **or completed (`done`)** investigation requires a live
+LLM client. A completed investigation is reopened **in place** (status returns
+to `active`, an `OPERATOR RESUME` turn is appended, and the prior conclusion is
+preserved as a starting point). After changing
+`RECON_LLM_API_KEY`, `RECON_LLM_BASE_URL`, or `RECON_LLM_MODEL`, restart the
+hub and confirm startup logs. `LLM client ready` means continuation is enabled;
+`LLM client disabled` includes non-secret fields such as `reason_class`,
+`llm_model`, `llm_base_url_scheme`, and `llm_base_url_host`.
+
+Expected UI states:
+
+- `aborted` + LLM enabled -> `Continue investigation` form.
+- `aborted` + LLM disabled -> recovery panel with LLM config keys and restart
+  guidance.
+- `done` + LLM enabled -> `Continue investigation` reopens the completed run in
+  place (prior conclusion preserved). LLM disabled -> a panel explaining
+  continuation needs a configured client and a hub restart.
+
+A new investigation is also auto-seeded with a compact, host-scoped digest of
+conclusions from prior `done` investigations (read-only "hints", bounded). Tune
+it under `investigator.priors` in `hub.yaml`; set `investigator.priors.enabled:
+false` to turn it off.
+
+If a browser at `/investigations/continue` shows plaintext
+`investigator disabled`, the running hub is stale or misconfigured. Restart the
+updated hub and recheck the startup fields above.
