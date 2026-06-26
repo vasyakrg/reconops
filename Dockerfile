@@ -28,10 +28,45 @@ ARG LDFLAGS="-s -w \
   -X 'github.com/vasyakrg/recon/internal/common/version.Version=${VERSION}' \
   -X 'github.com/vasyakrg/recon/internal/common/version.Commit=${COMMIT}'"
 
+# CGO_ENABLED=0 → fully static binaries with no system zoneinfo. The hub imports
+# time/tzdata, so the IANA timezone database is embedded IN the binary
+# (operator-timezone rendering works without the alpine `tzdata` package in the
+# runtime stage). Do not "optimize" by stripping it.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "${LDFLAGS}" -o /out/recon-hub   ./cmd/hub && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "${LDFLAGS}" -o /out/recon-agent ./cmd/agent
+
+# Package the agent tarballs + checksums the hub self-hosts (SH1). Cross-build
+# BOTH arches so a self-hosted hub can serve amd64 AND arm64 agents without
+# GitHub (the build host's arch alone is not enough). The tarball layout
+# mirrors `make dist-agent` EXACTLY:
+#   recon-agent-linux-<arch>/bin/recon-agent
+#   recon-agent-linux-<arch>/deploy/systemd/recon-agent.service
+#   recon-agent-linux-<arch>/deploy/sudoers/recon
+# because the install script extracts `*/bin/recon-agent` and the self-updater
+# extracts the literal `recon-agent-linux-<arch>/bin/recon-agent`. checksums.txt
+# uses sha256sum's default "<hex>  <name>" form — exactly what the agent
+# self-updater's checksums parser expects.
+#
+# NOTE: VERSION must be a real semver for the hub's outdated badge to work — a
+# non-semver tag (incl. the compose default "docker") collapses to 0.0.0 in
+# version.Outdated and silently disables version-skew detection. Build with
+# --build-arg VERSION=vX.Y.Z (RECON_VERSION in compose) for self-hosted deploys.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
+    mkdir -p /releases; \
+    for arch in amd64 arm64; do \
+      pkg="/pkg/recon-agent-linux-$arch"; \
+      mkdir -p "$pkg/bin" "$pkg/deploy/systemd" "$pkg/deploy/sudoers"; \
+      CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+        go build -trimpath -ldflags "${LDFLAGS}" -o "$pkg/bin/recon-agent" ./cmd/agent; \
+      cp deploy/systemd/recon-agent.service "$pkg/deploy/systemd/"; \
+      cp deploy/sudoers/recon "$pkg/deploy/sudoers/"; \
+      tar czf "/releases/recon-agent-linux-$arch.tar.gz" -C /pkg "recon-agent-linux-$arch"; \
+    done; \
+    cd /releases && sha256sum recon-agent-linux-*.tar.gz > checksums.txt
 
 # ── shared runtime base ──────────────────────────────────────────────────────
 FROM alpine:3.20 AS runtime-base
@@ -48,6 +83,12 @@ RUN addgroup -S -g 1000 recon \
  && chown -R recon:recon /var/lib/recon
 
 COPY --from=build /out/recon-hub /usr/local/bin/recon-hub
+
+# Self-hosted agent releases baked into the image (SH1). Served by the hub at
+# /releases/... so operators can curl-install / self-update agents with no
+# GitHub access. A non-volume path so it survives independently of the
+# /var/lib/recon state volume and is replaced on every image rebuild.
+COPY --from=build /releases /usr/local/share/recon/releases
 
 VOLUME ["/var/lib/recon"]
 EXPOSE 8080 9443

@@ -25,7 +25,7 @@ func (s *Server) apiStreamEvents(w http.ResponseWriter, r *http.Request, invID s
 		return
 	}
 	if s.loop == nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "investigator disabled")
+		writeAPIError(w, http.StatusServiceUnavailable, "investigator disabled: "+s.availability.ConfigHint)
 		return
 	}
 	inv, err := s.store.GetInvestigation(r.Context(), invID)
@@ -50,7 +50,7 @@ func (s *Server) apiStreamEvents(w http.ResponseWriter, r *http.Request, invID s
 	// reconnect without needing to re-query list endpoints.
 	maxSteps, maxTokens := s.loop.Budgets()
 	snapshot := map[string]any{
-		"investigation": investigationToView(inv, maxSteps, maxTokens),
+		"investigation": investigationToView(inv, maxSteps, maxTokens, s.terminalPayloadView(inv.ID, inv.SummaryJSON)),
 		"server_time":   time.Now().UTC().Format(time.RFC3339),
 	}
 	writeSSEEvent(w, "snapshot", snapshot)

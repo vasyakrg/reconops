@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -29,6 +30,7 @@ type JournalEntry struct {
 
 type JournalSummary struct {
 	Unit         string         `json:"unit"`
+	Source       string         `json:"source"`
 	Since        string         `json:"since"`
 	Lines        int            `json:"lines"`
 	Errors       int            `json:"errors"`
@@ -40,14 +42,19 @@ type JournalSummary struct {
 func (journalTail) Manifest() collect.Manifest {
 	return collect.Manifest{
 		Name:        "journal_tail",
-		Version:     "1.0.0",
+		Version:     "1.1.0",
 		Category:    "systemd",
-		Description: "Tail of journalctl for one unit. Returns a compact summary in data; full line-delimited JSON goes into an artifact for grep via search_artifact.",
-		Reads:       []string{"journalctl -u {unit} --since {since} -n {lines} -o json --no-pager"},
+		Description: "Read the systemd journal. Tail one unit, the kernel ring (kernel=true — where TPM/hardware spam lives), or the whole journal; optionally the previous boot (previous_boot=true — pre-reboot logs), a time window (since/until), a priority filter (priority), or a regex (grep). Returns a compact summary; full line-delimited JSON goes into an artifact for grep via search_artifact. When a unit's journal is empty the host's journald may be volatile — fall back to log_search / file_read over /var/log and the kernel ring.",
+		Reads:       []string{"journalctl -u {unit} | -k [-b -1] [--since ..] [--until ..] [-p ..] [-g ..] -n {lines} -o json --no-pager"},
 		Requires:    []collect.Capability{collect.CapSudoJournalctl},
 		ParamsSchema: []collect.ParamSpec{
-			{Name: "unit", Type: "string", Required: true, Description: "systemd unit name (e.g. kubelet.service)"},
+			{Name: "unit", Type: "string", Description: "systemd unit name (e.g. kubelet.service). Omit for the whole journal; mutually exclusive with kernel."},
+			{Name: "kernel", Type: "bool", Default: "false", Description: "read the kernel ring buffer (-k / --dmesg) instead of a unit"},
+			{Name: "previous_boot", Type: "bool", Default: "false", Description: "read the PREVIOUS boot (-b -1) — the logs from before the last reboot"},
 			{Name: "since", Type: "string", Default: "1 hour ago", Description: "journalctl --since value"},
+			{Name: "until", Type: "string", Description: "journalctl --until value (upper time bound)"},
+			{Name: "priority", Type: "string", Description: "journalctl -p priority filter: 0-7, a name (err), or a range (0..3)"},
+			{Name: "grep", Type: "string", Description: "journalctl -g regex filter on the message"},
 			{Name: "lines", Type: "int", Default: "1000", Description: "max lines to return (caps at 100000)"},
 		},
 	}
@@ -55,13 +62,22 @@ func (journalTail) Manifest() collect.Manifest {
 
 func (journalTail) Run(ctx context.Context, p collect.Params) (collect.Result, error) {
 	unit := strings.TrimSpace(p["unit"])
-	if unit == "" {
-		return collect.Result{}, fmt.Errorf("unit parameter required")
-	}
+	kernel := p["kernel"] == "true" || p["kernel"] == "1"
+	prevBoot := p["previous_boot"] == "true" || p["previous_boot"] == "1"
 	since := strings.TrimSpace(p["since"])
-	if since == "" {
+	until := strings.TrimSpace(p["until"])
+	priority := strings.TrimSpace(p["priority"])
+	grep := strings.TrimSpace(p["grep"])
+
+	if unit != "" && kernel {
+		return collect.Result{}, fmt.Errorf("unit and kernel are mutually exclusive")
+	}
+	// A bare unit tail keeps its historical default window; the other modes
+	// (kernel, whole journal) do not force a --since so the model controls it.
+	if since == "" && unit != "" && !prevBoot {
 		since = "1 hour ago"
 	}
+
 	lines := 1000
 	if s := p["lines"]; s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 100000 {
@@ -69,22 +85,57 @@ func (journalTail) Run(ctx context.Context, p collect.Params) (collect.Result, e
 		}
 	}
 
-	res, err := exec.Run(ctx, "journalctl",
-		[]string{"-u", unit, "--since", since, "-n", strconv.Itoa(lines), "-o", "json", "--no-pager"})
+	// Canonical arg order — MUST match journalctlPatterns() in the exec
+	// whitelist, or exec.Run panics on an unmatched shape.
+	args := make([]string, 0, 16)
+	if kernel {
+		args = append(args, "-k")
+	} else if unit != "" {
+		args = append(args, "-u", unit)
+	}
+	if prevBoot {
+		args = append(args, "-b", "-1")
+	}
+	if since != "" {
+		args = append(args, "--since", since)
+	}
+	if until != "" {
+		args = append(args, "--until", until)
+	}
+	if priority != "" {
+		args = append(args, "-p", priority)
+	}
+	if grep != "" {
+		args = append(args, "-g", grep)
+	}
+	args = append(args, "-n", strconv.Itoa(lines), "-o", "json", "--no-pager")
+
+	res, err := exec.Run(ctx, "journalctl", args)
 	truncated := errors.Is(err, exec.ErrStdoutTruncated)
 	if err != nil && !truncated {
 		return collect.Result{}, fmt.Errorf("journalctl: %w", err)
 	}
 
 	summary, hints := summarizeJournal(unit, since, res.Stdout)
-	artName := fmt.Sprintf("journal_%s.jsonl", sanitizeUnit(unit))
+	summary.Source = journalSource(unit, kernel, prevBoot)
+	artName := journalArtifactName(unit, kernel, prevBoot)
 	summary.ArtifactName = artName
 	if truncated {
 		hints = append(hints, collect.Hint{
 			Severity: "warn", Code: "journal.truncated",
-			Message: "journal output exceeded 16 MiB cap and was truncated; reduce --lines or narrow --since",
+			Message: "journal output exceeded 16 MiB cap and was truncated; reduce --lines or narrow --since/--until",
 		})
 	}
+	if summary.Lines == 0 {
+		hints = append(hints, collect.Hint{
+			Severity: "info", Code: "journal.empty",
+			Message: "no journal entries for this selector — journald may be volatile on this host. Fall back to log_search/file_read(from_end) over /var/log/syslog and to the kernel ring (kernel=true or the dmesg collector).",
+		})
+	}
+
+	slog.Debug("collector journal_tail",
+		"source", summary.Source, "since", since, "until", until, "priority", priority,
+		"grep", grep != "", "previous_boot", prevBoot, "lines_returned", summary.Lines, "artifact", artName)
 
 	return collect.Result{
 		Data:  summary,
@@ -93,6 +144,39 @@ func (journalTail) Run(ctx context.Context, p collect.Params) (collect.Result, e
 			{Name: artName, Mime: "application/x-ndjson", Body: res.Stdout},
 		},
 	}, nil
+}
+
+// journalSource is a human-readable label for the journal selection.
+func journalSource(unit string, kernel, prevBoot bool) string {
+	s := "all"
+	switch {
+	case kernel:
+		s = "kernel"
+	case unit != "":
+		s = "unit:" + unit
+	}
+	if prevBoot {
+		s += " (previous boot)"
+	}
+	return s
+}
+
+// journalArtifactName derives a distinct, sanitize()-safe artifact name per
+// query mode so kernel-ring / previous-boot / per-unit calls never collide on
+// "journal_.jsonl" (which would break the search_artifact name listing).
+func journalArtifactName(unit string, kernel, prevBoot bool) string {
+	base := "all"
+	switch {
+	case kernel:
+		base = "kernel"
+	case unit != "":
+		base = sanitizeUnit(unit)
+	}
+	name := "journal_" + base
+	if prevBoot {
+		name += "_boot-1"
+	}
+	return name + ".jsonl"
 }
 
 // summarizeJournal counts entries by priority level and surfaces the top-N

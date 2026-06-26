@@ -25,6 +25,10 @@ const (
 	CapSudoIptables   Capability = "SUDO_IPTABLES"
 	CapDACReadSearch  Capability = "CAP_DAC_READ_SEARCH"
 	CapNetRaw         Capability = "CAP_NET_RAW"
+	// CapSyslog is required to read the kernel ring buffer (dmesg / journal -k)
+	// on hosts with kernel.dmesg_restrict=1. CAP_DAC_READ_SEARCH does NOT cover
+	// it — the dmesg_restrict sysctl gates on CAP_SYSLOG specifically.
+	CapSyslog Capability = "CAP_SYSLOG"
 )
 
 type ParamSpec struct {

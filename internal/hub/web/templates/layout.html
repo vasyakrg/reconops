@@ -7,7 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="/static/hub.css">
+<link rel="stylesheet" href="/static/hub.css?v={{assetVer}}">
+<script src="/static/hub.js?v={{assetVer}}"></script>
 <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='9' fill='none' stroke='%23a8ff7a' stroke-width='1.4' stroke-dasharray='2 2' opacity='.6'/><circle cx='12' cy='12' r='5' fill='none' stroke='%23a8ff7a' stroke-width='1.4'/><path d='M12 3v4M12 17v4M3 12h4M17 12h4' stroke='%23a8ff7a' stroke-width='1.4' fill='none'/><circle cx='12' cy='12' r='1.4' fill='%23a8ff7a'/></svg>">
 </head>
 <body data-active="{{.ActiveNav}}">
@@ -59,8 +60,6 @@
     {{template "content" .}}
   </main>
 </div>
-
-<script src="/static/hub.js"></script>
 </body>
 </html>{{end}}
 

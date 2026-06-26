@@ -94,10 +94,12 @@ runtime:
   default_timeout: 30s
   heartbeat_interval: 15s
 
-# Self-updater. Default is ON: agent polls GitHub Releases hourly and, on a
-# newer tag with a matching checksums.txt, downloads + verifies SHA256 +
+# Self-updater. Default is ON: the agent polls its release source hourly and,
+# on a newer tag with a matching checksums.txt, downloads + verifies SHA256 +
 # atomically swaps ${PREFIX}/recon-agent + exits so systemd restarts on the
-# new version. Flip to false (and restart) to pin the running binary.
+# new version. repo_url below is set by the hub: a self-hosting hub injects its
+# own base (the agent updates straight from the hub, no GitHub), otherwise a
+# GitHub repo URL. Flip to false (and restart) to pin the running binary.
 update:
   enabled: true
   repo_url: ${RELEASE_REPO}

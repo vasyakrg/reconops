@@ -32,6 +32,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// Serialize all DB access through a single connection. SQLite permits only
+	// one writer at a time; with a multi-connection pool the live investigator
+	// loop goroutine writing concurrently with operator API/web actions can hit
+	// SQLITE_BUSY immediately — a read-then-write upgrade is NOT retried by
+	// busy_timeout — surfacing as "database is locked" operator errors. One
+	// connection makes operations queue instead of contend: correct, and ample
+	// for a single-node hub. Safe here because no transaction body touches the
+	// pool (s.db) while holding its tx, so there is no self-deadlock.
+	db.SetMaxOpenConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)

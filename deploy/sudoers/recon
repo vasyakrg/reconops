@@ -7,6 +7,6 @@
 #
 # Install with:  install -m 0440 deploy/sudoers/recon /etc/sudoers.d/recon
 
-Cmnd_Alias RECON_RO = /bin/journalctl, /usr/sbin/ss, /sbin/ip, /sbin/iptables -L -n -v, /bin/systemctl list-units *, /bin/systemctl status *
+Cmnd_Alias RECON_RO = /bin/journalctl, /usr/sbin/ss, /sbin/ip, /sbin/iptables -L -n -v, /bin/systemctl list-units *, /bin/systemctl status *, /bin/dmesg --time-format=iso, /usr/bin/dmesg --time-format=iso
 
 recon ALL=(root) NOPASSWD: RECON_RO

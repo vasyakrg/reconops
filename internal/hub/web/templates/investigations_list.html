@@ -48,11 +48,49 @@
   <div class="dim" style="margin:10px 0;font-size:11.5px">No agents enrolled yet — investigation will run with an empty allowlist.</div>
   {{end}}
 
+  {{if gt (len .LLMProfiles) 1}}
+  <div style="margin-top:12px">
+    <label for="model_profile" style="display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2);margin-bottom:6px">Model routing</label>
+    <select name="model_profile" id="model_profile" style="font-family:var(--font-mono);font-size:12px;padding:4px 6px">
+      <option value="">Auto — route per step</option>
+      {{range .LLMProfiles}}<option value="{{.Name}}">Pin: {{.Name}} · {{.Role}} · {{.Model}}</option>{{end}}
+    </select>
+    <span class="dim" style="font-size:10.5px;margin-left:8px">Auto picks a profile per operation (plan→primary, compaction→summarizer…). Pin one to force it for every step.</span>
+  </div>
+  {{end}}
+
+  {{if and .PriorsEnabled .PriorCandidates}}
+  <div style="display:flex;align-items:center;justify-content:space-between;margin:12px 0 6px">
+    <label style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.06em;color:var(--fg-2)">Attach prior investigations (optional)</label>
+    <div style="display:flex;gap:6px">
+      <button type="button" class="btn xs ghost" onclick="document.querySelectorAll('input[name=prior_ids]').forEach(c=>c.checked=true)">all</button>
+      <button type="button" class="btn xs ghost" onclick="document.querySelectorAll('input[name=prior_ids]').forEach(c=>c.checked=false)">none</button>
+    </div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r-md);padding:8px;background:var(--bg-0)">
+    {{range .PriorCandidates}}
+    <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;cursor:pointer;padding:3px 4px;border-radius:var(--r-sm)" onmouseover="this.style.background='var(--bg-2)'" onmouseout="this.style.background=''">
+      <input type="checkbox" name="prior_ids" value="{{.ID}}" style="margin-top:3px">
+      <span style="flex:1;min-width:0">
+        {{if eq .Status "done"}}<span class="badge ok" style="font-size:9.5px">done</span>
+        {{else if eq .Status "aborted"}}<span class="badge err" style="font-size:9.5px">aborted</span>
+        {{else}}<span class="badge" style="font-size:9.5px">{{.Status}}</span>{{end}}
+        <span class="mono" style="color:var(--fg-0)">{{shortID .ID 16}}</span>
+        <span class="dim" style="font-size:10.5px"> · {{.Date}} · {{.Hosts}}</span>
+        {{if .RootCause}}<span class="md-inline rc-clamp-2" style="color:var(--fg-1);font-size:11.5px;line-height:1.4;margin-top:1px">{{mdLine .RootCause}}</span>
+        {{else}}<span style="display:block;color:var(--fg-2);font-size:11.5px;line-height:1.4">{{.Goal}}</span>{{end}}
+      </span>
+    </label>
+    {{end}}
+  </div>
+  <div class="dim" style="font-size:10.5px;line-height:1.45;margin-top:4px">Done conclusions on overlapping hosts attach automatically; tick others (incl. aborted/active — their findings ride along) here. Read-only "hints — re-verify".</div>
+  {{end}}
+
   <div style="margin-top:10px;display:flex;justify-content:flex-end"><button class="btn primary" type="submit">Start investigation</button></div>
 </form>
 {{else}}
 <div class="card" style="border-color:color-mix(in oklab, var(--err) 35%, var(--border));margin-bottom:18px">
-  <div class="hint-error mono" style="font-size:12px">LLM client disabled. Set <code>RECON_LLM_API_KEY</code> (and optionally <code>RECON_LLM_BASE_URL</code> / <code>RECON_LLM_MODEL</code>) and restart the hub.</div>
+  <div class="hint-error mono" style="font-size:12px">LLM client disabled ({{.Investigator.DisabledReason}}). {{.Investigator.ConfigHint}}</div>
 </div>
 {{end}}
 

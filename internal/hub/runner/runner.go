@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/vasyakrg/recon/internal/hub/logtriage"
 	"github.com/vasyakrg/recon/internal/hub/store"
 	reconpb "github.com/vasyakrg/recon/internal/proto"
 )
@@ -199,8 +200,47 @@ func (r *Runner) OnResult(agentID string, res *reconpb.CollectResult) {
 	}); err != nil {
 		r.log.Error("upsert result", "task_id", res.RequestId, "err", err)
 	}
+	// (Task 10) Build a compact artifact index beside the artifacts. Synchronous
+	// so a SummarizeTasks call that races the task's terminal status still finds
+	// it; best-effort, never affects the stored result.
+	r.indexArtifacts(res.RequestId, artDir)
 	r.unregister(res.RequestId)
 	r.log.Info("task finished", "task_id", res.RequestId, "agent", agentID, "status", status, "duration_ms", res.DurationMs)
+}
+
+// indexArtifacts writes a logtriage index (_index.json) summarising every file
+// under the task's artifact dir. Best-effort: missing dir (no artifacts),
+// binary, streaming, or oversized files are handled inside logtriage; failures
+// are logged and never corrupt the stored task result (Task 10).
+func (r *Runner) indexArtifacts(taskID, dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // no artifact dir (common: data-only collectors) — nothing to index
+	}
+	indexes := make([]logtriage.ArtifactIndex, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == logtriage.IndexFileName {
+			continue
+		}
+		idx, ierr := logtriage.IndexFile(filepath.Join(dir, e.Name()))
+		if ierr != nil {
+			r.log.Warn("artifact index skipped", "task_id", taskID, "name", e.Name(), "err", ierr)
+			continue
+		}
+		indexes = append(indexes, idx)
+	}
+	if len(indexes) == 0 {
+		return
+	}
+	body, err := json.MarshalIndent(map[string]any{"artifacts": indexes}, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, logtriage.IndexFileName), body, 0o600); err != nil {
+		r.log.Warn("artifact index write", "task_id", taskID, "err", err)
+		return
+	}
+	r.log.Info("artifact index written", "task_id", taskID, "files", len(indexes))
 }
 
 // closeOpenArtifacts force-closes and unregisters every open artifact file

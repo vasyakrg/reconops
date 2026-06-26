@@ -16,15 +16,18 @@ type Config struct {
 }
 
 // UpdateConfig controls the opt-in self-updater. When Enabled is true the
-// agent periodically queries the GitHub Releases API (RepoURL) and, on a
-// newer tag, downloads recon-agent-linux-<arch>.tar.gz, verifies the SHA256
-// via the checksums.txt artifact, swaps its own binary on disk and execs
-// exit(0) so systemd restarts it on the new version. When false (default)
+// agent periodically checks RepoURL for a newer release and, on a newer tag,
+// downloads recon-agent-linux-<arch>.tar.gz, verifies the SHA256 via the
+// checksums.txt artifact, swaps its own binary on disk and execs exit(0) so
+// systemd restarts it on the new version. RepoURL is either a GitHub repo
+// (polls the GitHub Releases API) or a self-hosting hub base such as
+// https://hub.example.com:8443 (polls <base>/releases/latest, served by the
+// hub — SH6); the source is auto-detected. When Enabled is false (default)
 // the agent never touches disk — the operator runs the install one-liner
 // manually, preserving the read-only-by-default invariant.
 type UpdateConfig struct {
 	Enabled         bool          `yaml:"enabled"`
-	RepoURL         string        `yaml:"repo_url"`       // https://github.com/<owner>/<repo>
+	RepoURL         string        `yaml:"repo_url"`       // GitHub repo URL or self-hosting hub base
 	CheckInterval   time.Duration `yaml:"check_interval"` // min 10m; default 1h
 	BinaryPath      string        `yaml:"binary_path"`    // path to swap; default /usr/local/bin/recon-agent
 	AllowPrerelease bool          `yaml:"allow_prerelease"`

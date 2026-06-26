@@ -23,6 +23,10 @@ hub:
   # default deploy/docker/hub.yaml dns_names list.
   server_name: hub
 
+  # Self-updater release source. A GitHub repo URL polls the GitHub Releases
+  # API; a hub base URL (e.g. https://hub:8443) polls the hub's own
+  # /releases/latest and updates straight from the hub with no GitHub access
+  # (self-hosted mode, SH6). The source is auto-detected from repo_url.
   update:
     enabled: true
     repo_url: https://github.com/vasyakrg/reconops

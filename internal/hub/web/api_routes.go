@@ -81,9 +81,21 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 			s.requireAPIAuth(store.APIScopeInvestigate, func(w http.ResponseWriter, r *http.Request) {
 				s.apiHypothesis(w, r, invID)
 			})(w, r)
+		case "continue":
+			s.requireAPIAuth(store.APIScopeInvestigate, func(w http.ResponseWriter, r *http.Request) {
+				s.apiContinueInvestigation(w, r, invID)
+			})(w, r)
+		case "retry":
+			s.requireAPIAuth(store.APIScopeInvestigate, func(w http.ResponseWriter, r *http.Request) {
+				s.apiRetryInvestigation(w, r, invID)
+			})(w, r)
 		case "auto-approve":
 			s.requireAPIAuth(store.APIScopeInvestigate, func(w http.ResponseWriter, r *http.Request) {
 				s.apiAutoApprove(w, r, invID)
+			})(w, r)
+		case "autonomous":
+			s.requireAPIAuth(store.APIScopeInvestigate, func(w http.ResponseWriter, r *http.Request) {
+				s.apiAutonomous(w, r, invID)
 			})(w, r)
 		case "events":
 			s.requireAPIAuth(store.APIScopeRead, func(w http.ResponseWriter, r *http.Request) {

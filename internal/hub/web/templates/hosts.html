@@ -2,7 +2,7 @@
 <header class="pg-hd">
   <div>
     <div class="title">Hosts</div>
-    <div class="sub mono">{{len .Hosts}} enrolled{{if .LatestVersion}} · latest agent <a href="{{.ReleasesURL}}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">{{.LatestVersion}}</a>{{end}}</div>
+    <div class="sub mono">{{len .Hosts}} enrolled{{if .LatestVersion}} · latest agent {{if .ReleasesURL}}<a href="{{.ReleasesURL}}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">{{.LatestVersion}}</a>{{else}}<span style="color:var(--accent)">{{.LatestVersion}}</span>{{end}}{{end}}</div>
   </div>
   <div class="actions">
     {{if .InstallEnabled}}
@@ -79,12 +79,12 @@
         <span class="muted">{{.AgentVersion}}</span>
         {{if outdated .AgentVersion $.LatestVersion}}
         <button type="button" class="btn xs"
-                onclick="event.stopPropagation();showUpdateHint('{{.ID}}','{{.AgentVersion}}','{{$.LatestVersion}}','{{with index .Facts "arch"}}{{.}}{{else}}amd64{{end}}','{{$.ReleasesURL}}')"
+                onclick="event.stopPropagation();showUpdateHint('{{.ID}}','{{.AgentVersion}}','{{$.LatestVersion}}','{{with index .Facts "arch"}}{{.}}{{else}}amd64{{end}}','{{$.UpdateDownloadBase}}')"
                 title="Show update command"
                 style="margin-left:4px;color:var(--warn);border-color:var(--warn);background:var(--warn-bg)">↑ update</button>
         {{end}}
       </td>
-      <td class="mono muted" style="font-size:11px" title="{{.LastSeenAt.UTC.Format "2006-01-02 15:04:05 UTC"}}">{{sinceUTC .LastSeenAt}}</td>
+      <td class="mono muted" style="font-size:11px" title="{{formatUserTZ $.UserTZ .LastSeenAt "2006-01-02 15:04:05 MST"}}">{{sinceUTC .LastSeenAt}}</td>
     </tr>
   {{end}}
   </tbody>

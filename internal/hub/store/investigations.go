@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,10 @@ type Investigation struct {
 	TotalCompletionTokens int
 	TotalToolCalls        int
 	CompactionTokens      int // tokens spent on internal compaction calls (review C2)
+	TotalCachedTokens     int // prompt tokens served from provider cache (Task 4)
+	// TokenCalibrationRatio is the EWMA bytes/token ratio used to estimate the
+	// compaction trigger (Task 6). 0 means uncalibrated → default ratio.
+	TokenCalibrationRatio float64
 	SummaryJSON           sql.NullString
 	// AllowedHosts: empty means "all hosts" (legacy behaviour). When set,
 	// list_hosts only surfaces these and collect/collect_batch reject any
@@ -37,6 +42,34 @@ type Investigation struct {
 	// without operator click. Toggleable per-investigation from the
 	// detail page.
 	AutoApprove bool
+	// AutoRunUntilSteps / AutoRunUntilTokens: absolute totals targets bounding an
+	// operator-armed autonomous burst (migration 0020). While armed (either > 0)
+	// the loop auto-approves probe tool_calls until the matching running total
+	// reaches the target, then pauses for review and disarms. 0 = not armed on
+	// that axis. Independent of AutoApprove (the unbounded manual toggle).
+	AutoRunUntilSteps  int
+	AutoRunUntilTokens int
+	// ModelProfile pins every LLM operation in this investigation to a named
+	// model profile (Task 14). Empty means "auto" — the router selects a
+	// profile per operation by role.
+	ModelProfile string
+	// Priors: prior done-investigation IDs whose conclusions were attached to
+	// this run at start (auto host-overlap selection + operator-selected).
+	// Informational — surfaced on the detail page; empty when none.
+	Priors []string
+}
+
+// PriorInvestigation is the compact slice of a COMPLETED investigation used to
+// build the cross-investigation priors digest injected into new investigations.
+// SummaryJSON is the raw mark_done post-mortem; parse it with
+// ParseInvestigationTerminalPayload (which tolerates legacy / missing payloads).
+type PriorInvestigation struct {
+	ID           string
+	Goal         string
+	Status       string
+	CreatedAt    time.Time
+	AllowedHosts []string
+	SummaryJSON  sql.NullString
 }
 
 type Message struct {
@@ -91,25 +124,28 @@ func (s *Store) InsertInvestigation(ctx context.Context, inv Investigation) erro
 	}
 	_, err := s.db.ExecContext(ctx, `
         INSERT INTO investigations
-          (id, goal, status, created_by, created_at, updated_at, model, base_url, allowed_hosts_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		inv.ID, inv.Goal, inv.Status, inv.CreatedBy, now, now, inv.Model, inv.BaseURL, allowed)
+          (id, goal, status, created_by, created_at, updated_at, model, base_url, allowed_hosts_json, model_profile)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		inv.ID, inv.Goal, inv.Status, inv.CreatedBy, now, now, inv.Model, inv.BaseURL, allowed, inv.ModelProfile)
 	return err
 }
 
 func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation, error) {
 	var inv Investigation
 	var allowed sql.NullString
+	var priors sql.NullString
 	var auto int
 	err := s.db.QueryRowContext(ctx, `
         SELECT id, goal, status, created_by, created_at, updated_at, model, base_url,
-               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json,
-               allowed_hosts_json, extra_steps, extra_tokens, auto_approve
+               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, total_cached_tokens, token_calibration_ratio, summary_json,
+               allowed_hosts_json, extra_steps, extra_tokens, auto_approve, model_profile, priors_json,
+               auto_run_until_steps, auto_run_until_tokens
           FROM investigations WHERE id=?`, id).
 		Scan(&inv.ID, &inv.Goal, &inv.Status, &inv.CreatedBy, &inv.CreatedAt, &inv.UpdatedAt,
 			&inv.Model, &inv.BaseURL,
-			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON,
-			&allowed, &inv.ExtraSteps, &inv.ExtraTokens, &auto)
+			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.TotalCachedTokens, &inv.TokenCalibrationRatio, &inv.SummaryJSON,
+			&allowed, &inv.ExtraSteps, &inv.ExtraTokens, &auto, &inv.ModelProfile, &priors,
+			&inv.AutoRunUntilSteps, &inv.AutoRunUntilTokens)
 	inv.AutoApprove = auto == 1
 	if errors.Is(err, sql.ErrNoRows) {
 		return Investigation{}, fmt.Errorf("investigation %s not found", id)
@@ -117,7 +153,73 @@ func (s *Store) GetInvestigation(ctx context.Context, id string) (Investigation,
 	if allowed.Valid && allowed.String != "" {
 		_ = json.Unmarshal([]byte(allowed.String), &inv.AllowedHosts)
 	}
+	if priors.Valid && priors.String != "" {
+		_ = json.Unmarshal([]byte(priors.String), &inv.Priors)
+	}
 	return inv, err
+}
+
+// SetInvestigationPriors records which prior investigations were attached to a
+// run (auto host-overlap + operator-selected) for operator visibility on the
+// detail page. Stored as a JSON id array; an empty slice clears it.
+func (s *Store) SetInvestigationPriors(ctx context.Context, id string, ids []string) error {
+	val := ""
+	if len(ids) > 0 {
+		b, err := json.Marshal(ids)
+		if err != nil {
+			return err
+		}
+		val = string(b)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET priors_json=?, updated_at=? WHERE id=?`,
+		val, time.Now().UTC(), id)
+	return err
+}
+
+// scanPriorInvestigations maps prior-investigation rows. Callers MUST select
+// (id, goal, status, created_at, allowed_hosts_json, summary_json) in that order.
+func scanPriorInvestigations(rows *sql.Rows) ([]PriorInvestigation, error) {
+	var out []PriorInvestigation
+	for rows.Next() {
+		var p PriorInvestigation
+		var allowed sql.NullString
+		if err := rows.Scan(&p.ID, &p.Goal, &p.Status, &p.CreatedAt, &allowed, &p.SummaryJSON); err != nil {
+			return nil, err
+		}
+		if allowed.Valid && allowed.String != "" {
+			_ = json.Unmarshal([]byte(allowed.String), &p.AllowedHosts)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListInvestigationsByIDs returns the investigations whose ids are in the set,
+// of ANY status — for rendering attached priors on the detail page and for
+// resolving operator-selected priors at Start (which may include aborted/active
+// runs, attached for their findings). Non-existent ids are silently skipped.
+// Order is created_at DESC.
+func (s *Store) ListInvestigationsByIDs(ctx context.Context, ids []string) ([]PriorInvestigation, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := `SELECT id, goal, status, created_at, allowed_hosts_json, summary_json
+            FROM investigations
+           WHERE id IN (` + strings.Join(placeholders, ",") + `)
+           ORDER BY created_at DESC`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanPriorInvestigations(rows)
 }
 
 // SetAutoApprove flips the per-investigation auto-approve toggle.
@@ -129,6 +231,49 @@ func (s *Store) SetAutoApprove(ctx context.Context, id string, on bool) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE investigations SET auto_approve = ?, updated_at = ? WHERE id = ?`,
 		v, time.Now().UTC(), id)
+	return err
+}
+
+// SetAutonomousRun arms an autonomous burst: it records the ABSOLUTE totals
+// targets (computed by the caller as current totals + operator delta) and flips
+// status back to 'active' so a paused investigation resumes (mirrors
+// ExtendBudget). At least one target must be > 0 to be "armed". Independent of
+// auto_approve — the bounded burst is tracked solely by these targets, so it
+// never silently leaves the unbounded toggle on after the burst ends.
+func (s *Store) SetAutonomousRun(ctx context.Context, id string, untilSteps, untilTokens int) error {
+	if untilSteps < 0 {
+		untilSteps = 0
+	}
+	if untilTokens < 0 {
+		untilTokens = 0
+	}
+	_, err := s.db.ExecContext(ctx, `
+        UPDATE investigations
+           SET auto_run_until_steps  = ?,
+               auto_run_until_tokens = ?,
+               status                = 'active',
+               updated_at            = ?
+         WHERE id = ?`,
+		untilSteps, untilTokens, time.Now().UTC(), id)
+	return err
+}
+
+// DisarmAutonomous clears the autonomous-run targets (0/0 = not armed). Called
+// when the burst is consumed (loop pauses for review) or the operator takes
+// over. Leaves auto_approve and status untouched — the caller owns those.
+func (s *Store) DisarmAutonomous(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET auto_run_until_steps = 0, auto_run_until_tokens = 0, updated_at = ? WHERE id = ?`,
+		time.Now().UTC(), id)
+	return err
+}
+
+// SetModelProfile pins (or clears, with "") the per-investigation model
+// routing override (Task 14).
+func (s *Store) SetModelProfile(ctx context.Context, id, profile string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET model_profile = ?, updated_at = ? WHERE id = ?`,
+		profile, time.Now().UTC(), id)
 	return err
 }
 
@@ -153,6 +298,63 @@ func (s *Store) UpdateInvestigationStatus(ctx context.Context, id, status string
 	return err
 }
 
+// ReactivateInvestigation moves a previously aborted investigation back to
+// active and clears the stale terminal summary/error payload. The message
+// history and tool-call timeline stay intact so the next LLM turn continues
+// from the original context.
+func (s *Store) ReactivateInvestigation(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET status='active', summary_json=NULL, updated_at=? WHERE id=? AND status='aborted'`,
+		time.Now().UTC(), id)
+	return err
+}
+
+// ClaimAbortedForResume atomically flips an aborted investigation to active
+// (clearing the terminal payload) and reports whether THIS call won the
+// transition. The single conditional UPDATE is the concurrency gate: a
+// double-submitted resume finds the row already active (0 rows affected) and
+// gets false, so the caller can no-op instead of appending a second RESUME
+// message and double-auditing.
+func (s *Store) ClaimAbortedForResume(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET status='active', summary_json=NULL, updated_at=? WHERE id=? AND status='aborted'`,
+		time.Now().UTC(), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ClaimReopenableForResume atomically flips a REOPENABLE terminal investigation
+// (aborted OR done) back to active, clearing the stale terminal payload, and
+// reports whether THIS call won the transition. Same single-conditional-UPDATE
+// concurrency gate as ClaimAbortedForResume: a double-submitted reopen finds the
+// row already active (0 rows affected) and gets false, so the caller no-ops
+// instead of appending a second OPERATOR RESUME message and double-auditing.
+//
+// 'done' is reopenable by operator request — continuing a completed
+// investigation in place (done -> active + OPERATOR RESUME) is a deliberate
+// reversal of the earlier "done is hard-terminal" choice. The retry path stays
+// aborted-only (ClaimAbortedForResume) because re-running the last step of a
+// transient abort has no meaning for a cleanly completed run.
+func (s *Store) ClaimReopenableForResume(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET status='active', summary_json=NULL, updated_at=? WHERE id=? AND status IN ('aborted','done')`,
+		time.Now().UTC(), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // AccumulateCompactionTokens tallies prompt+completion tokens spent on
 // internal compaction calls. Kept separate from total_*_tokens so the
 // investigation budget gate can subtract them (review C2).
@@ -171,6 +373,32 @@ func (s *Store) AccumulateTokens(ctx context.Context, id string, prompt, complet
                updated_at = ?
          WHERE id = ?`,
 		prompt, completion, time.Now().UTC(), id)
+	return err
+}
+
+// AccumulateCachedTokens tallies prompt tokens that the provider served from
+// cache (Task 4). Read-only accounting surfaced in diagnostics; it never feeds
+// the budget gate (cached tokens are still real prompt tokens for budgeting).
+func (s *Store) AccumulateCachedTokens(ctx context.Context, id string, cached int) error {
+	if cached <= 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET total_cached_tokens = total_cached_tokens + ?, updated_at=? WHERE id=?`,
+		cached, time.Now().UTC(), id)
+	return err
+}
+
+// SetTokenCalibration persists the latest EWMA bytes/token ratio for an
+// investigation (Task 6). It is read back on the next turn to estimate the
+// compaction trigger. Ignores non-positive ratios (nothing to calibrate yet).
+func (s *Store) SetTokenCalibration(ctx context.Context, id string, ratio float64) error {
+	if ratio <= 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE investigations SET token_calibration_ratio = ?, updated_at=? WHERE id=?`,
+		ratio, time.Now().UTC(), id)
 	return err
 }
 
@@ -194,7 +422,7 @@ func (s *Store) ListInvestigations(ctx context.Context, limit int) ([]Investigat
 	}
 	rows, err := s.db.QueryContext(ctx, `
         SELECT id, goal, status, created_by, created_at, updated_at, model, base_url,
-               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, summary_json
+               total_prompt_tokens, total_completion_tokens, total_tool_calls, compaction_tokens, total_cached_tokens, token_calibration_ratio, summary_json
           FROM investigations ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -205,12 +433,52 @@ func (s *Store) ListInvestigations(ctx context.Context, limit int) ([]Investigat
 		var inv Investigation
 		if err := rows.Scan(&inv.ID, &inv.Goal, &inv.Status, &inv.CreatedBy, &inv.CreatedAt, &inv.UpdatedAt,
 			&inv.Model, &inv.BaseURL,
-			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.SummaryJSON); err != nil {
+			&inv.TotalPromptTokens, &inv.TotalCompletionTokens, &inv.TotalToolCalls, &inv.CompactionTokens, &inv.TotalCachedTokens, &inv.TokenCalibrationRatio, &inv.SummaryJSON); err != nil {
 			return nil, err
 		}
 		out = append(out, inv)
 	}
 	return out, rows.Err()
+}
+
+// ListRecentDoneInvestigations returns the most recent COMPLETED (done)
+// investigations other than excludeID, newest first — the candidate pool for the
+// AUTOMATIC host-scoped priors digest (done-only: a prior's value there is its
+// final conclusion). summary_json is returned raw for the caller to parse.
+func (s *Store) ListRecentDoneInvestigations(ctx context.Context, excludeID string, limit int) ([]PriorInvestigation, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT id, goal, status, created_at, allowed_hosts_json, summary_json
+          FROM investigations
+         WHERE status='done' AND id != ?
+         ORDER BY created_at DESC LIMIT ?`, excludeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanPriorInvestigations(rows)
+}
+
+// ListRecentInvestigationsForPriors returns the most recent investigations of
+// ANY status other than excludeID, newest first — the candidate pool for the
+// operator's MANUAL prior picker, which may attach aborted/active runs (for
+// their findings/partial evidence) in addition to done runs.
+func (s *Store) ListRecentInvestigationsForPriors(ctx context.Context, excludeID string, limit int) ([]PriorInvestigation, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT id, goal, status, created_at, allowed_hosts_json, summary_json
+          FROM investigations
+         WHERE id != ?
+         ORDER BY created_at DESC LIMIT ?`, excludeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanPriorInvestigations(rows)
 }
 
 // AppendMessage assigns the next seq for the investigation atomically.
@@ -462,15 +730,23 @@ func (s *Store) FindingCountsByInvestigation(ctx context.Context) (map[string]Fi
 
 // SnapshotCounters returns a small fingerprint used by SSE to decide when
 // the page should self-refresh: status, tool_call count, last tool_call
-// status, and findings count — in one query (review M8).
-func (s *Store) SnapshotCounters(ctx context.Context, invID string) (status, lastTCStatus string, steps, findings int, err error) {
+// status, findings count, budget counters, updated_at, and terminal summary
+// content for hashing — in one bounded query (review M8).
+func (s *Store) SnapshotCounters(ctx context.Context, invID string) (status, lastTCStatus string, steps, findings int, updatedAt time.Time, promptTokens, completionTokens, totalToolCalls, extraSteps, extraTokens int, terminalSummary sql.NullString, err error) {
 	err = s.db.QueryRowContext(ctx, `
         SELECT i.status,
                COALESCE((SELECT status FROM tool_calls WHERE investigation_id=i.id ORDER BY seq DESC LIMIT 1), ''),
                (SELECT COUNT(*) FROM tool_calls WHERE investigation_id=i.id),
-               (SELECT COUNT(*) FROM findings   WHERE investigation_id=i.id)
+               (SELECT COUNT(*) FROM findings   WHERE investigation_id=i.id),
+               i.updated_at,
+               i.total_prompt_tokens,
+               i.total_completion_tokens,
+               i.total_tool_calls,
+               i.extra_steps,
+               i.extra_tokens,
+               i.summary_json
           FROM investigations i WHERE i.id=?`, invID).
-		Scan(&status, &lastTCStatus, &steps, &findings)
+		Scan(&status, &lastTCStatus, &steps, &findings, &updatedAt, &promptTokens, &completionTokens, &totalToolCalls, &extraSteps, &extraTokens, &terminalSummary)
 	return
 }
 
