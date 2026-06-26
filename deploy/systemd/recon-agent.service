@@ -41,9 +41,13 @@ ReadWritePaths=/var/lib/recon
 #   CAP_SYS_PTRACE      — process_list reads /proc/<pid>/{stat,status,cmdline}
 #                         for processes owned by other users.
 #   CAP_NET_RAW         — pure-Go ICMP (net_connect ping fallback).
+#   CAP_SYSLOG          — read the kernel ring buffer (dmesg collector,
+#                         journal_tail kernel=true) on hosts with
+#                         kernel.dmesg_restrict=1. CAP_DAC_READ_SEARCH does NOT
+#                         cover it. Read-only side-channel into the ring buffer.
 # All of these are READ side-channels; none allow mutation of host state.
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE CAP_NET_RAW
-AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE CAP_NET_RAW
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE CAP_NET_RAW CAP_SYSLOG
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_SYS_PTRACE CAP_NET_RAW CAP_SYSLOG
 
 [Install]
 WantedBy=multi-user.target

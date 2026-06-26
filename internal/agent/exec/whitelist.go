@@ -62,6 +62,102 @@ func JournalSince(s string) error {
 	return nil
 }
 
+// JournalGrep validates a journalctl -g pattern. It deliberately PERMITS regex
+// metacharacters (the whole point of -g) but blocks control characters, and
+// requires the pattern to compile as an RE2 regex — a conservative subset of
+// journald's PCRE that rejects pathological/garbage input. Do NOT reuse
+// NoShellMeta here: it bans * ? | which are legal regex.
+func JournalGrep(s string) error {
+	if s == "" {
+		return errors.New("empty grep pattern")
+	}
+	if len(s) > 512 {
+		return fmt.Errorf("grep pattern too long (%d bytes); max 512", len(s))
+	}
+	if strings.ContainsAny(s, "\x00\n\r") {
+		return errors.New("control characters not allowed in grep pattern")
+	}
+	if _, err := regexp.Compile(s); err != nil {
+		return fmt.Errorf("invalid regex: %w", err)
+	}
+	return nil
+}
+
+var priorityNames = map[string]bool{
+	"emerg": true, "alert": true, "crit": true, "err": true,
+	"warning": true, "notice": true, "info": true, "debug": true,
+}
+
+// PriorityLevel validates a journalctl -p value: a single level (0-7 or a name
+// like "err") or a range ("0..3" / "warning..debug").
+func PriorityLevel(s string) error {
+	parts := strings.SplitN(s, "..", 2)
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return fmt.Errorf("invalid priority %q", s)
+		}
+		if n, err := strconv.Atoi(p); err == nil {
+			if n < 0 || n > 7 {
+				return fmt.Errorf("priority out of range [0,7]: %d", n)
+			}
+			continue
+		}
+		if !priorityNames[strings.ToLower(p)] {
+			return fmt.Errorf("invalid priority token %q", p)
+		}
+	}
+	return nil
+}
+
+// journalctlPatterns enumerates the allowed journalctl arg shapes. The collector
+// emits flags in a fixed canonical order — selector, boot, --since, --until, -p,
+// -g, then -n -o json --no-pager — and this generates the cartesian product of
+// the optional segments so validateArgs has an exact positional match for every
+// combination the collector can produce. -o json is on EVERY shape so the
+// summarizeJournal parser always has JSON to read.
+func journalctlPatterns() [][]ArgSpec {
+	tail := []ArgSpec{
+		{Flag: "-n"}, {Value: PosInt(100000)},
+		{Flag: "-o"}, {Value: literal("json")},
+		{Value: literal("--no-pager")},
+	}
+	selectors := [][]ArgSpec{
+		{},                                       // whole journal
+		{{Flag: "-u"}, {Value: SystemdUnitName}}, // one unit
+		{{Flag: "-k"}},                           // kernel ring (--dmesg)
+	}
+	boots := [][]ArgSpec{{}, {{Flag: "-b"}, {Value: literal("-1")}}}
+	sinces := [][]ArgSpec{{}, {{Flag: "--since"}, {Value: JournalSince}}}
+	untils := [][]ArgSpec{{}, {{Flag: "--until"}, {Value: JournalSince}}}
+	prios := [][]ArgSpec{{}, {{Flag: "-p"}, {Value: PriorityLevel}}}
+	greps := [][]ArgSpec{{}, {{Flag: "-g"}, {Value: JournalGrep}}}
+
+	var pats [][]ArgSpec
+	for _, sel := range selectors {
+		for _, boot := range boots {
+			for _, since := range sinces {
+				for _, until := range untils {
+					for _, prio := range prios {
+						for _, grep := range greps {
+							p := make([]ArgSpec, 0, 16)
+							p = append(p, sel...)
+							p = append(p, boot...)
+							p = append(p, since...)
+							p = append(p, until...)
+							p = append(p, prio...)
+							p = append(p, grep...)
+							p = append(p, tail...)
+							pats = append(pats, p)
+						}
+					}
+				}
+			}
+		}
+	}
+	return pats
+}
+
 // HostPort accepts host:port with conservative chars only; used by
 // connectivity checks.
 var hostPortRe = regexp.MustCompile(`^[A-Za-z0-9._\-]{1,253}:[0-9]{1,5}$`)
@@ -116,20 +212,27 @@ func RegisterDefaults() {
 
 	// journalctl — used by journal_tail. Hard cap stdout at 16 MiB so a
 	// runaway --since/--lines combo cannot OOM the agent (review H2).
+	// Patterns are generated to cover optional unit / -k / -b -1 / --until /
+	// -p / -g in a fixed canonical order (see journalctlPatterns).
 	Register(Entry{
 		Bin:            "journalctl",
 		Candidates:     []string{"/bin/journalctl", "/usr/bin/journalctl", "/usr/sbin/journalctl"},
 		Timeout:        30 * time.Second,
 		MaxStdoutBytes: 16 * 1024 * 1024,
+		Patterns:       journalctlPatterns(),
+	})
+
+	// dmesg — kernel ring buffer with absolute ISO timestamps. Grep is done
+	// in-process by the collector (Go RE2), so the only allowed arg shape is the
+	// fixed --time-format=iso. Reading the ring needs CAP_SYSLOG on hosts with
+	// kernel.dmesg_restrict=1.
+	Register(Entry{
+		Bin:            "dmesg",
+		Candidates:     []string{"/bin/dmesg", "/usr/bin/dmesg", "/sbin/dmesg"},
+		Timeout:        10 * time.Second,
+		MaxStdoutBytes: 16 * 1024 * 1024,
 		Patterns: [][]ArgSpec{
-			// journalctl -u <unit> --since <ts> -n <N> -o json --no-pager
-			{
-				{Flag: "-u"}, {Value: SystemdUnitName},
-				{Flag: "--since"}, {Value: JournalSince},
-				{Flag: "-n"}, {Value: PosInt(100000)},
-				{Flag: "-o"}, {Value: literal("json")},
-				{Value: literal("--no-pager")},
-			},
+			{{Value: literal("--time-format=iso")}},
 		},
 	})
 

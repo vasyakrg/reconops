@@ -66,6 +66,25 @@ func TestSanitizeUnit(t *testing.T) {
 	}
 }
 
+func TestJournalArtifactName(t *testing.T) {
+	cases := []struct {
+		unit         string
+		kernel, boot bool
+		want         string
+	}{
+		{"", true, false, "journal_kernel.jsonl"},
+		{"", false, false, "journal_all.jsonl"},
+		{"pve-cluster.service", false, false, "journal_pve-cluster.service.jsonl"},
+		{"", true, true, "journal_kernel_boot-1.jsonl"},
+		{"foo/bar.service", false, false, "journal_foo_bar.service.jsonl"},
+	}
+	for _, c := range cases {
+		if got := journalArtifactName(c.unit, c.kernel, c.boot); got != c.want {
+			t.Errorf("journalArtifactName(%q,%v,%v) = %q, want %q", c.unit, c.kernel, c.boot, got, c.want)
+		}
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if truncate("hello", 10) != "hello" {
 		t.Fatal("no truncate")
