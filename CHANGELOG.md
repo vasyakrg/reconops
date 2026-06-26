@@ -14,6 +14,130 @@ on top — no new MVP scope, just the productionisation track: k9s
 redesign, docker compose, GitHub Actions release pipeline, quick install,
 scoped investigations, session persistence, network/TLS hardening.
 
+### Investigation UX surface + investigator tool/prompt hardening
+
+Eight operator-reported items, root-caused against the tree and live prod
+sessions. Web-UI changes are stdlib `html/template` + inline styles + vanilla JS
+(no new deps); investigator changes preserve every architecture invariant.
+
+- **Newest-first detail ordering** — the investigation-detail timeline and
+  findings now read newest-first (findings newest-first *within* the
+  pin/ignore group), reversed in the web view layer only. The store lists stay
+  ascending for the tail-first investigator gates; the Markdown export and JSON
+  API stay ascending (stable diffs / pagination).
+- **Prominent Conclusion card** — a done investigation leads with its structured
+  `mark_done` diagnosis (root cause, confidence badge, symptoms, remediation,
+  where-to-look-next, hosts, linked evidence task_ids) instead of burying it in a
+  raw-JSON panel. Graceful fallback for legacy / `budget_finalize` / `operator_end`
+  terminals.
+- **Latest-only `mark_done`** — a reopen→reclose no longer stacks duplicate
+  "Conclusion (mark_done)" sections in the notebook; the live latest stays in
+  `summary_json` + the card.
+- **Auto-run terminal-hold UX** — a held `mark_done` under an armed auto-run
+  renders a Conclusion-review card explaining the hold (gating unchanged); the
+  header badge flips to "auto-run · paused — review the conclusion" (change-gated,
+  no flicker).
+- **`RECON_LOG_LEVEL`** (`debug|info|warn|error`, default `info`) for **both**
+  binaries via `internal/common/logging`, replacing the hardcoded `slog.LevelInfo`
+  that hid the `[FIX:auto-approve]` Debug trail on prod. A non-terminal probe held
+  despite enabled automation is logged at `warn`.
+- **Operator timezone** — web-UI timestamps render in the browser's timezone
+  (`Intl` → `tz` cookie → `formatUserTZ`; `time/tzdata` embedded for the static
+  build). All machine-facing timestamps (export, JSON API, SSE, notebook, LLM)
+  stay UTC.
+- **Retrieval wedge fix** — an oversized structured result with no searchable
+  artifact no longer dead-ends at `search_artifact`; `get_full_result` returns a
+  bounded, pageable byte window (`offset`/`next_offset`) so a 700KB result can't
+  flood the context.
+- **collect param coercion** — JSON scalars (`kernel:true`, `tail_lines:200`,
+  `max_bytes:1048576`) are coerced to strings at unmarshal (via `json.Number`, so
+  large ints keep their digits) instead of failing the call; `search_artifact`
+  returns an actionable RE2 lookahead/backreference error.
+- **`ask_operator` anti-loop** — a verbatim re-ask is blocked pre-execution
+  (no `waiting` leak), and the streak-nudge threshold is `3→2`.
+- **Prompt clarity** — `evidence_refs` is task-ids-only (memory/finding ids are
+  reasoning handles, not refs); the load-bearing definition and re-retrieval
+  obligation are explicit; the priors digest carries a `[CROSS_INVESTIGATION_HINT]`
+  marker.
+- **Deterministic recall** — the compaction prompt MUST echo ids verbatim, and
+  `compact()` re-injects a findings digest (finding_id + evidence task_ids) as a
+  live system_note past the archive cut — a guaranteed recall floor.
+
+The investigator tool count stays **11** (BASE_TASKS.md §4); `get_full_result`
+gained an `offset` parameter for paging, not a new tool.
+
+### Investigator diagnosis-quality hardening (synthesis, not just breadth)
+
+Motivated by `inv_a00000000003` → `inv_a00000000005` (host `host-x` unreachable
+over network): the model found the confirmed NIC/LACP carrier-flap that matched
+the primary symptom, then discarded it for not proving the operator's word
+"завис/freeze", burned ~25 steps + 2M operator-granted tokens on a boot-window
+rabbit hole, and closed on a negative `not_kernel_hang` conclusion. The
+breadth-only coverage gate could not catch it (22 regions drilled). Universal
+fixes — not network-specific:
+
+- **System prompt rule 15 (symptom-anchoring):** separate observed symptoms from
+  the reporter's mechanism word; the root cause MUST explain the PRIMARY symptom;
+  a symptom-matching confirmed observation may not be silently dropped.
+- **Hardened `mark_done` schema:** `symptoms` now required (≥1); added
+  `confidence` (confirmed|likely|speculative|inconclusive), `root_cause_explains`,
+  and `where_to_look_next` (required unless confirmed).
+- **Explanatory-adequacy gate** (`explanation_gate.go`): one-time self-critique
+  bounce before a confident close — restate the primary symptom, explain it
+  causally, and account for symptom-matching observations not adopted as the cause.
+- **Differential re-rank checkpoint** (`investigator.rerank_interval_steps`,
+  default 8): anti-tunnel-vision nudge every N probes without a finding.
+- **Priors fencing:** the priors digest now surfaces each prior's *incident*
+  alongside its conclusion, with a MUST-level "re-derive, don't adopt" header.
+
+Regression: deterministic `differential_regression_test.go` replays the two real
+conclusions against the new gates; the live cluster-shape eval stays behind `eval`.
+
+### Autonomous run within a step/token budget (operator UI trigger)
+
+Operators can arm a **bounded** autonomous burst (migration `0020`): "run +N
+steps / +M tokens" auto-approves probe tool_calls with no per-step confirmation,
+then **pauses for review** (not abort) and disarms. The terminal `mark_done`
+still surfaces for operator review unless `OPERATOR FINALIZE`. Read-only invariant
+untouched — only who approves the same read-only probes changes. UI: "▶ run
+autonomously" / "⏸ take over" controls + paused-card re-arm; endpoints
+`POST /investigations/autonomous` and `POST /api/v1/investigations/{id}/autonomous`.
+
+### Investigation live-update + approve loop hardening (`8e8e069` `eaa2167` `87e9628` `31c33d2`)
+
+After approving a proposed tool_call the page could stick on "Waiting for the
+model." until a manual reload. Redesigned the live channel end-to-end:
+
+**Fixed**
+- The page no longer gets stuck after an approve. Root cause: a `state-change`
+  arriving while a fragment fetch was in flight was dropped and never re-sent.
+- The live engine no longer self-terminates on non-`active` states (waiting /
+  budget-paused) — lifecycle is driven by status, not by the `#live-pulse` badge.
+
+**Changed**
+- Server: `/investigations/events/{id}` now **pushes** from the investigator
+  `Bus` (initial snapshot on connect, re-emit per event) plus a 10s safety
+  re-snapshot + heartbeat + 5-min `bye`, replacing poll-with-only-on-change.
+- Client (`hub.js`): coalesced, fingerprint-gated `refresh()` that never drops
+  the latest state; an **always-on, change-aware backstop poll** (~4.5s) so a
+  silently-stalled SSE stream can no longer leave the page stuck; capped
+  reconnect backoff; the engine starts for any non-terminal status.
+- Action handlers (`decide`/`hypothesis`/`retry`/`continue`) content-negotiate:
+  live fragments for `X-Requested-With: fetch`, the `303` redirect otherwise.
+
+**Added**
+- No-reload operator approve via `data-live-preserve` (previously a dead
+  attribute): forms submit through `fetch` and swap fragments in place, with a
+  native-submit fallback.
+- Regression coverage (`investigation_live_test.go`): approve→advance,
+  waiting→pending fingerprint change, AJAX vs `303` negotiation, SSE
+  initial + Bus-driven `state-change`.
+- `scripts/smoke/investigation-live.sh`: approve-loop + SSE-streaming deploy
+  smoke check (also surfaces nginx proxy-buffering misconfig).
+- Decision: stayed on `fetch()` + server fragments rather than vendoring HTMX
+  (CSP `script-src 'self'` forbids external scripts; the codebase already uses
+  this pattern). A full HTMX migration is deferred, not adopted.
+
 ### Web — k9s redesign (F1–F4) (`d65c60a` `289912b` `e111ce9` `ecf3916`)
 
 **Added**

@@ -10,7 +10,7 @@
 
 ## 1. Принципы промпт-инжиниринга для Recon
 
-Перед конкретикой — пять принципов, из которых выведены все решения ниже.
+Перед конкретикой — шесть принципов, из которых выведены все решения ниже.
 
 **1. Ограниченное пространство действий лучше открытого.** Claude даёт предложение только из заранее описанного набора tools с строгой JSON-схемой. Никаких «напиши команду». Это даёт и безопасность (read-only по построению), и предсказуемость (валидация на стороне hub'а).
 
@@ -21,6 +21,8 @@
 **4. Evidence-first.** Ни один finding не появляется без ссылки на `task_id`. Это заложено на уровне JSON-schema у `add_finding` (`evidence_refs` required, minItems: 1). Нет отдельной политики «пожалуйста, ссылайся» — её не сделать опциональной.
 
 **5. Оператор всегда прав.** `OPERATOR HYPOTHESIS` перекрывает текущий план. `IGNORED` closes a branch permanently. Эти сигналы — не подсказки, а директивы, и это прописано в system prompt на уровне MUST.
+
+**6. Дифференциал прежде вывода.** Прежде чем закрывать расследование, инвестигатор перечисляет набор *классов* возможных первопричин, выведенных из симптома (не хардкод-список), и для каждого называет самое дешёвое отличающее наблюдение. Самый «громкий» высокочастотный кластер логов — лишь один кандидат, а не вывод по умолчанию; редкие outlier-кластеры в `artifact_index` заслуживают внимания именно потому, что редки. High-prior класс, не подтверждённый, не опровергнутый и не помеченный явно как «не проверен с причиной», сам по себе остаётся открытым `evidence_gap` — `mark_done` блокируется, пока он стоит. Это model-generated дифференциал, ортогональный директиве `OPERATOR HYPOTHESIS` (она по-прежнему приоритетнее).
 
 ---
 
@@ -91,6 +93,8 @@ You work WITH a human operator in step-by-step mode. You propose exactly ONE too
    - All reasonable avenues explored and no cause found (state "inconclusive").
    - Operator signals completion ("enough", "stop", "wrap up").
 10. **Ask, don't guess, on domain intent.** Use `ask_operator` when a decision requires knowledge only the human has (e.g., which node runs etcd, whether staging hosts are in scope).
+11. **Differential before conclusion.** From the symptom, enumerate a small set of candidate root-cause **classes** (reasoning, not a hardcoded list) and name the cheapest discriminating observation for each. The loudest high-volume cluster is one candidate, not the default cause; low-frequency outlier clusters in the `artifact_index` deserve scrutiny precisely because they are rare. An enumerated high-prior class that is not yet confirmed, refuted, or explicitly recorded as unchecked-with-reason is an open `evidence_gap` (rule 4): do not `mark_done` (rule 9) while it stands. The hub backs this with a one-time coverage nudge on a premature `mark_done`.
+12. **Symptoms vs. mechanism — explanatory adequacy is the bar.** On the first turn (and after any operator redirect) restate the incident as directly OBSERVED symptoms, separated from any cause/mechanism word the reporter used ("hung", "froze", "crashed" are hypotheses, not observations); name the PRIMARY symptom. The conclusion MUST causally explain that primary symptom — a confirmed observation matching a reported symptom is a primary candidate and may NOT be discarded merely because it does not also explain an assumed mechanism (if set aside, record it as an open `evidence_gap` and resolve it before `mark_done`). A close that only rules things out without explaining the primary symptom is `inconclusive`, never confirmed. The hub backs a confident close with a one-time explanatory-adequacy nudge. Cross-investigation priors are HINTS from a DIFFERENT incident: do not adopt a prior's conclusion without re-deriving it from THIS incident's symptoms.
 
 # Output format
 
@@ -103,10 +107,13 @@ No free-form text outside of these. If you want to communicate with the operator
 # When calling `mark_done`
 
 The `summary` argument must be a structured post-mortem with fields:
-- `symptoms`: array of observed user-facing symptoms
+- `symptoms` (required, ≥1): array of directly OBSERVED symptoms — what was seen, not a mechanism word
 - `hosts_examined`: array of host_ids
 - `root_cause`: one paragraph stating the cause, or "inconclusive" if unknown
+- `root_cause_explains` (required unless inconclusive): which listed symptom(s) the root_cause causally explains — proves the conclusion accounts for the incident, not just what was ruled out
+- `confidence` (required): `confirmed` | `likely` | `speculative` | `inconclusive` — a close that only rules things out without explaining the primary symptom is `inconclusive`
 - `evidence_refs`: array of task_ids underpinning the conclusion
+- `where_to_look_next` (required unless confidence is `confirmed`): hypotheses you could not verify, each naming the collector/artifact that would confirm or refute it
 - `recommended_remediation`: plain-text instructions for the operator. You do NOT perform them.
 
 # Tone
@@ -246,8 +253,8 @@ You are speaking with an advanced engineer who values depth over politeness. Be 
     "type": "object",
     "properties": {
       "task_id": {"type": "string", "description": "Task id that produced the artifact."},
-      "artifact_name": {"type": "string", "description": "Artifact filename from the task's artifact list."},
-      "pattern": {"type": "string", "description": "ECMAScript-compatible regex. Case-insensitive by default."},
+      "artifact_name": {"type": "string", "description": "Artifact filename. OPTIONAL: omit when the task has a single artifact; a wrong/missing name returns an error listing the valid names. Scans only the first 4 MiB (sets file_truncated) — for bigger files use log_search or file_read(from_end)."},
+      "pattern": {"type": "string", "description": "RE2-compatible regex. Case-insensitive by default."},
       "context_lines": {
         "type": "integer",
         "default": 3,
@@ -261,7 +268,7 @@ You are speaking with an advanced engineer who values depth over politeness. Be 
         "maximum": 500
       }
     },
-    "required": ["task_id", "artifact_name", "pattern"]
+    "required": ["task_id", "pattern"]
   }
 }
 ```
@@ -288,11 +295,13 @@ You are speaking with an advanced engineer who values depth over politeness. Be 
 ```json
 {
   "name": "get_full_result",
-  "description": "Retrieve the FULL structured output of a previous collector (not the summary). Use when the summary is insufficient and you need every field.",
+  "description": "Retrieve the FULL structured output of a previous collector (not the summary). Use when the summary is insufficient and you need every field. If the result is oversized the hub blocks it and steers you to search_artifact / the artifact_index; pass force:true ONLY to override after a targeted search could not answer the gap. An oversized result (or one with no searchable artifact) is returned as a BOUNDED byte window with a next_offset — page through it with offset, do not expect the whole body in one call (three-tier context).",
   "input_schema": {
     "type": "object",
     "properties": {
-      "task_id": {"type": "string"}
+      "task_id": {"type": "string"},
+      "force": {"type": "boolean", "description": "Override the oversize block. Use ONLY after a targeted search_artifact could not answer the evidence gap."},
+      "offset": {"type": "integer", "description": "Byte offset into an oversized result body for paging; the hub returns a bounded window and a next_offset. Default 0."}
     },
     "required": ["task_id"]
   }
@@ -373,16 +382,30 @@ You are speaking with an advanced engineer who values depth over politeness. Be 
             "type": "string",
             "description": "One paragraph. Say 'inconclusive' if unknown."
           },
+          "root_cause_explains": {
+            "type": "string",
+            "description": "Which listed symptom(s) the root_cause causally explains (name the primary). Required unless confidence is 'inconclusive'."
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["confirmed", "likely", "speculative", "inconclusive"],
+            "description": "Honest confidence. A close that only rules things out without explaining the primary symptom is 'inconclusive'."
+          },
           "evidence_refs": {
             "type": "array",
             "items": {"type": "string"}
+          },
+          "where_to_look_next": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Unverified hypotheses, each naming the collector/artifact that would confirm or refute it. Required unless confidence is 'confirmed'."
           },
           "recommended_remediation": {
             "type": "string",
             "description": "Actions for the operator to take. You do not perform them."
           }
         },
-        "required": ["symptoms", "hosts_examined", "root_cause", "recommended_remediation"]
+        "required": ["symptoms", "root_cause", "confidence", "recommended_remediation"]
       }
     },
     "required": ["summary"]
@@ -458,7 +481,7 @@ You are speaking with an advanced engineer who values depth over politeness. Be 
       "status": "online",
       "last_seen": "2026-04-17T14:32:01Z",
       "agent_version": "0.1.0",
-      "available_collectors": ["system_info", "systemd_units", "journal_tail", "net_ifaces", "net_listen", "net_connect", "dns_resolve", "process_list", "file_read", "disk_usage"]
+      "available_collectors": ["system_info", "systemd_units", "journal_tail", "net_ifaces", "net_listen", "net_connect", "dns_resolve", "process_list", "file_read", "log_search", "dmesg", "disk_usage"]
     }
   ],
   "total": 5,
@@ -575,6 +598,9 @@ Produce a dense structured state in this exact format (markdown):
 
 ## Pursued hypotheses
 <for each hypothesis explored: statement, status (confirmed/refuted/partial), evidence_refs>
+
+## Candidate root-cause classes (differential coverage)
+<the candidate root-cause CLASSES enumerated from the symptom (rule 14) and, for each, its status: confirmed / refuted / unchecked-with-reason, plus the cheapest discriminating observation still owed. These are MODEL-GENERATED differential candidates — distinct from, and lower priority than, any operator hypotheses above. Preserve them so a high-prior class is not silently dropped across compaction.>
 
 ## Ignored directions (operator)
 <verbatim list of IGNORED findings/branches>

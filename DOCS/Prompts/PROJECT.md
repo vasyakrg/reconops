@@ -142,7 +142,7 @@ type Manifest struct {
     Category     string         // "network"
     Description  string         // human-readable, используется LLM
     Reads        []string       // что коллектор читает: "/proc/net/tcp", "ss -tulpn"
-    Requires     []Capability   // SUDO_SS, CAP_DAC_READ_SEARCH
+    Requires     []Capability   // SUDO_SS, CAP_DAC_READ_SEARCH, CAP_SYSLOG (kernel ring)
     ParamsSchema []ParamSpec    // для UI и LLM
     OutputType   reflect.Type   // для генерации JSON schema
 }
@@ -166,7 +166,7 @@ type Hint struct {
 ### 3.4. Read-only: пять слоёв защиты
 
 1. **Протокол.** В proto-схеме gRPC есть только `Collect`. Ни одного глагола для изменения. Невозможно выразить деструктив через API.
-2. **Каталог.** Коллекторы вкомпилированы в бинарь. Нет механизма подгрузки кода извне. Новый коллектор = новый релиз агента.
+2. **Каталог.** Коллекторы вкомпилированы в бинарь. Нет механизма подгрузки кода извне. Новый коллектор = новый релиз агента. Дифференциальная методология инвестигатора (§7.7) намеренно остаётся на уровне рассуждения и не добавляет коллектор — она опирается на уже существующую logtriage-кластеризацию, поэтому новый релиз агента не нужен.
 3. **Exec gateway.** Все вызовы внешних команд проходят через `internal/agent/exec/readonly.go` с whitelist бинарников и whitelist'ом форм аргументов. Попытка вызвать что-то вне списка → panic на старте.
 4. **ОС-уровень.** Systemd-юнит запускает агента под пользователем `recon` с минимальными capabilities. Для `journalctl`, `ss`, `iptables -L` — точечные sudoers-записи с конкретными аргументами, без подстановок.
 5. **CI-проверка.** Go-линтер запрещает в пакете `collectors/` импорт `os.Remove`, `os.OpenFile` с WRITE-флагами, `syscall.Unlink`, `exec.Command` минуя gateway.
@@ -212,6 +212,44 @@ auth:
   bootstrap_tokens_file: /etc/recon/bootstrap.tokens
   admin_users: [vasyansk]
 ```
+
+### 4.3. Самостоятельный хостинг агента (self-hosted distribution)
+
+По умолчанию агент распространяется через **GitHub Releases** (install-скрипт,
+self-update, бейдж «устарел»). Чтобы хаб работал **без доступа к GitHub**,
+включается режим self-hosted — хаб сам раздаёт агента.
+
+- **Сборка в образ.** Dockerfile кросс-компилирует агента под `amd64` и `arm64`,
+  пакует `recon-agent-linux-<arch>.tar.gz` (та же раскладка, что у `make
+  dist-agent`: `recon-agent-linux-<arch>/bin/recon-agent` + `deploy/systemd` +
+  `deploy/sudoers`) и `checksums.txt` в невольюмный путь
+  `/usr/local/share/recon/releases`. Агент версионируется тем же LDFLAGS, что и
+  хаб, — раздаваемая версия совпадает с запущенным хабом.
+- **Раздача.** Публичные (без auth, как `/install/agent.sh`) маршруты:
+  - `GET /releases/latest/download/<asset>` и `GET /releases/download/<tag>/<asset>`
+    — тарболлы и `checksums.txt` из baked-каталога (`filepath.Clean` +
+    prefix-guard, whitelist арки, неизвестное → 404);
+  - `GET /releases/latest` — JSON в форме GitHub Releases API
+    (`{tag_name, draft:false, prerelease:false, assets:[{name,
+    browser_download_url}]}`), `tag_name` = версия baked-агента, ссылки активов
+    указывают на сам хаб (от `install.external_url` либо из запроса). Это
+    позволяет self-updater'у агента переиспользовать GitHub-JSON-парсер.
+- **Переключатель.** `install.self_hosted: true` (env `RECON_INSTALL_SELF_HOSTED`).
+  В этом режиме install-one-liner и `update.repo_url` агента указывают на базу
+  хаба (`external_url` + `/releases/...`); `release_repo_url` можно не задавать.
+  GitHub-путь остаётся выбираемым (`self_hosted: false`).
+- **Self-updater агента.** Источник релиза определяется автоматически по
+  `update.repo_url`: GitHub-URL → GitHub Releases API; любой другой `http(s)`-URL
+  трактуется как база хаба → `<base>/releases/latest`. Весь путь
+  скачивание → проверка SHA256 по `checksums.txt` → атомарная замена бинаря
+  переиспользуется без изменений.
+- **Бейдж «устарел».** В self-hosted источником «последней версии» служит
+  версия baked-агента (без `api.github.com`). Требование: `RECON_VERSION` должен
+  быть валидным semver — не-semver-тег (включая дефолт `docker`) схлопывается в
+  `0.0.0` в `version.Outdated` и тихо отключает сравнение версий.
+- **Инварианты.** Read-only сохранён (§3.4): хаб только *раздаёт* read-артефакты,
+  никаких мутирующих verb/коллекторов; проверка SHA256 всех загрузок сохранена —
+  хаб отдаёт настоящий `checksums.txt`.
 
 ---
 
@@ -509,6 +547,8 @@ Investigator — сервис внутри hub'а, который ведёт д�
 
 **Compaction.** Когда контекст приближается к 150K токенов, hub вызывает Claude вспомогательным промптом «сожми старую часть расследования в state». Старые messages помечаются `archived`, в активном контексте остаётся сжатый state + последние N шагов.
 
+**Кластеризация логов (`artifact_index`).** Слой summary/raw для лог-артефактов проходит через `internal/hub/logtriage`: строки схлопываются в кластеры `(template, severity)` с числом вхождений и диапазоном строк (`first_line`/`last_line`), и этот `artifact_index` отдаётся модели рядом с резюме. Именно он выносит на поверхность **низкочастотные outlier-кластеры** (редкие, но диагностически важные) рядом с доминирующим шумом — основа дифференциальной методологии (§7.7). Поэтому отдельный «коллектор аномалий» не нужен: кластеризация уже есть (§3.4). Замечание о бюджете: на одно-хостовом пути большой `artifact_index` может быть схлопнут до заголовочного (самого громкого) кластера с флагом `_index_truncated`; полный набор кластеров достаётся через `get_full_result(task_id)` — поэтому перечисление классов в §7.7 идёт по полному индексу, а не по схлопнутому заголовку.
+
 ### 7.5. Hypothesis и Ignore — структурные вмешательства
 
 **Hypothesis** — форма в UI:
@@ -539,6 +579,35 @@ OPERATOR ACTIONS (since last turn):
 | `max_parallel_collects` | 10 | Коллекторов одновременно в `collect_batch` |
 | `broad_selector_threshold` | 5 | Селектор покрывает > N хостов → confirmation |
 | Per-agent rate limit | 30/min | Коллекторов в минуту на один агент |
+
+### 7.7. Дифференциальная методология и coverage gate
+
+Реальный инцидент (`inv_a00000000002`): хост завис и пропал из сети, первопричина — зависший контроллер NIC. Инвестигатор её упустил: он заякорился на самом громком кластере логов (21k строк `tpm_try_transmit` storm), закрылся выводом «TPM storm / inconclusive» и вызвал `mark_done` — редкие NIC/link-flap-кластеры были прямо в `artifact_index`, но остались непросмотренными (139k токенов за 13 шагов). Сбой был в **рассуждении, не в инструментах**.
+
+**Методология (rule 14 в system prompt).** Из симптома инвестигатор сначала перечисляет небольшой набор *классов* первопричин (cpu-lockup, OOM, storage/IO, network/NIC, kernel-panic, hardware/MCE, watchdog, power/thermal — это **примеры**, не хардкод-список) и для каждого называет самое дешёвое отличающее наблюдение. Самый громкий кластер — один кандидат, а не вывод по умолчанию; редкие outlier-кластеры заслуживают внимания именно потому, что редки. Сначала breadth-first проход по существующему logtriage-индексу, и только потом узкие чтения. При флаге `_index_truncated` перечисление идёт по полному набору кластеров через `get_full_result(task_id)` (§7.4). Непокрытый high-prior класс — это открытый `evidence_gap`: `mark_done` и объявление находки load-bearing блокируются, пока он стоит; покрытие проверяется **до** load-bearing-находки, а не после (правило 9 после находки отключает пробы).
+
+**Coverage gate (hub-side backstop).** Помимо промпта, hub перехватывает первый `mark_done` (`internal/hub/investigator/coverage_gate.go`): если расследование заканчивается, когда был предъявлен мультикластерный `artifact_index`, но модель просмотрела меньше двух различных регионов лога (`search_artifact` / `get_full_result`), `mark_done` один раз отклоняется с подсказкой-репланом. Это **грубый breadth-прокси, а не покрытие по классам**: структурного состояния класса в истории нет (`MemoryKindHypothesis` без точек записи), точная дисциплина по классам живёт в промпте. Гейт срабатывает **строго один раз** (маркер в истории сообщений предотвращает бесконечную блокировку), уважает anti-loop-бюджет, отключается при директивах оператора (`OPERATOR FINALIZE` / `HYPOTHESIS` / `RESUME`), и его отбой аддитивен — `mark_done` штатно резолвится своим `function_call_output` (никаких висящих tool_call). Отклонённый `mark_done` становится новейшим executed-инструментом, поэтому post-finding-локдаун (правило 9) снимается на один реплан-ход и подсказка «проверь непокрытый класс» становится выполнимой.
+
+**Второй инцидент того же класса (`inv_a00000000003` → `inv_a00000000005`): сбой в синтезе, а не в широте.** Тот же хост (`host-x`), тот же симптом «не отвечает по сети + IPMI завис». Здесь модель **нашла** нужный сигнал (`igb eno1 Link Down/Up`) и сама записала, что он «прямо соответствует "не отвечает по сети"», — а затем **отбросила** его: «NIC events объясняют только сетевую недоступность, не полный freeze». Она заякорилась на слове оператора «**завис**» (механизм-гипотеза, не наблюдение), сожгла ~25 шагов и +2M операторских токенов в боковой ветке про границу boot-окна, и закрылась **отрицательным** выводом `not_kernel_hang`, не объяснив первичный симптом. Coverage gate (§выше) не сработал: модель просмотрела 22 региона — breadth-прокси был удовлетворён. Правильную первопричину (`network.eno1_lacp_member_link_flap`) модель нашла лишь после явного хинта оператора. Выводы универсальны (не про сеть): сбой в **ранжировании/объяснении**, плюс anti-tunnel-vision и stale-priors. Доработки:
+
+- **Rule 15 (symptom-anchoring).** На первом ходу (и после каждого редиректа оператора) модель формулирует инцидент как список **наблюдаемых симптомов**, явно отделённых от слов-механизмов («завис»/«freeze»/«crash» — это гипотезы о причине, не наблюдения). Дифференциал (rule 14) ранжирует классы по тому, как они объясняют **первичный** симптом; подтверждённое наблюдение, совпадающее с симптомом, нельзя отбросить лишь потому, что оно не объясняет предполагаемый механизм — иначе его фиксируют как открытый `evidence_gap` и закрывают до `mark_done`.
+- **Explanatory-adequacy gate (`explanation_gate.go`).** Hub-side backstop в дополнение к coverage gate: перед **уверенным** закрытием (`confidence` confirmed|likely) один раз отбивает `mark_done` с self-critique-подсказкой — переформулировать первичный симптом, объяснить его причинно, и перечислить наблюдения, совпадающие с симптомом, но не принятые как причина. Где coverage gate меряет **широту** drilling, этот — **адекватность синтеза**. One-time, отключается на `OPERATOR FINALIZE`/`HYPOTHESIS`/`RESUME`, гуманные закрытия (speculative/inconclusive) не трогает.
+- **Схема `mark_done` ужесточена.** Обязательны `symptoms` (≥1), `confidence` (confirmed|likely|speculative|inconclusive), `root_cause_explains` (какой симптом объясняет вывод; не требуется при inconclusive) и `where_to_look_next` (требуется, если confidence ≠ confirmed). Вывод «только исключил X», не объясняющий первичный симптом, честно помечается `inconclusive`.
+- **Differential re-rank checkpoint (`loop.go`).** Каждые `investigator.rerank_interval_steps` пробных вызовов без load-bearing-находки (по умолчанию 8; 0 отключает) — одноразовый system_note «шаг назад, переранжируй дифференциал»; ограничен (≤3 на расследование), снимается после load-bearing-находки, не делает собственных LLM/tool-вызовов.
+- **Priors fencing (`priors.go`).** Дайджест прайоров теперь показывает **инцидент** каждого прайора рядом с выводом, а заголовок поднят до MUST: вывод прошлого расследования — гипотеза из **другого** инцидента, его нельзя присваивать как причину текущего без независимой перепроверки по симптомам ЭТОГО инцидента. (В `inv_a00000000005` дайджест прайора прямо подсовывал ошибочный «TPM storm».)
+
+**Без нового коллектора и без релиза агента.** Методология опирается на уже существующую logtriage-кластеризацию (§7.4) и `artifact_index`; контракты read-only, one-tool-per-turn и evidence-first не затронуты (§3.4). Это model-generated дифференциал, ортогональный и подчинённый оператор-директиве `OPERATOR HYPOTHESIS`.
+
+Регрессии: детерминированные тесты гейтов, схемы, чекпоинта и прайоров (`coverage_gate_test.go`, `explanation_gate` + схема в `diagnosis_quality_test.go`, `differential_regression_test.go` — реплей реального инцидента, `prompt_test.go`) — в CI; нондетерминированный офлайн-eval на живой модели (`differential_eval_test.go`, build-tag `eval`) — периодическая ручная проверка, не CI-гейт.
+
+### 7.8. Автономный прогон в рамках бюджета шагов/токенов
+
+Поверх per-investigation тумблера `auto_approve` (§7.6, безлимитный) оператор может **армировать ограниченный автономный прогон**: задать бюджет «+N шагов / +M токенов», в рамках которого инвестигатор сам аппрувит пробные tool_call'ы **без подтверждения** на каждом шаге, а по исчерпании бюджета **встаёт на паузу для ревью** (не abort) и разоружается. Это прямой ответ на инцидент выше, где оператор вручную 6 раз доливал бюджет, аппручивая каждый шаг.
+
+- **Состояние** (миграция `0020_autonomous_run.sql`): абсолютные цели `auto_run_until_steps` / `auto_run_until_tokens` (0/0 = не армировано). Независимы от `auto_approve` — разоружение чистое, безлимитный тумблер не остаётся включённым.
+- **Loop** (`StartAutonomousRun`): армирование одновременно **выдаёт** тот же бюджет как global-headroom (`ExtendBudget`), чтобы global-cap-пауза не сработала раньше автономной цели; `shouldAutoApprove` аппрувит пробы, пока `totals < target`; по достижении — `step()` ставит `paused` с сообщением `AUTONOMOUS PAUSE` и разоружает. Re-arm из paused возобновляет.
+- **Терминальный carve-out сохранён.** `mark_done` под автономным прогоном по-прежнему ждёт оператора (если не было `OPERATOR FINALIZE`) — «расследуй сам, вывод покажи мне». Read-only-инвариант не затронут: меняется только КТО аппрувит те же read-only пробы.
+- **UI** (`investigation_detail.html`): в шапке — контрол «▶ run autonomously» (поля steps/tokens) и «⏸ take over» (разоружить); пока армировано, безлимитный «⚡ auto» скрыт. Re-arm доступен в paused-карточке. Эндпоинты: `POST /investigations/autonomous` (web) и `POST /api/v1/investigations/{id}/autonomous` (JSON).
 
 ---
 
@@ -648,7 +717,7 @@ OPERATOR ACTIONS (since last turn):
   - override: `hub.yaml.llm.{base_url, model, api_key_env, http_referer, x_title}`
   
   **Отклонения от Anthropic Messages API:** `tool_choice: "required"` вместо `{"type":"any"}`; extended thinking (`budget_tokens`) НЕ используется — не портируется между провайдерами. Качество диагностики на сложных кейсах теоретически ниже, чем с Claude через native API; если потребуется — вернуться к Anthropic SDK прицельно для этой возможности.
-- **Observability:** structured logs (`slog`), опционально Prometheus на `/metrics`
+- **Observability:** structured logs (`slog`), опционально Prometheus на `/metrics`. Уровень логирования обоих бинарей (hub + agent) задаётся env `RECON_LOG_LEVEL` (`debug|info|warn|error`, default `info`) через общий `internal/common/logging` — `debug` поднимает per-decision auto-approve trail (`[FIX:auto-approve]`) на проде без пересборки (в Debug-сайтах нет секретов/PII). Operator-facing timestamps в web-UI рендерятся в таймзоне браузера (cookie `tz`, встроенный `time/tzdata`); все machine-facing метки (export, JSON API, SSE, notebook, LLM) остаются UTC/RFC3339 (инвариант three-tier / §7).
 - **Packaging:** один бинарь hub, один бинарь agent; systemd units; tar + deb/rpm (пост-MVP)
 
 ---
@@ -709,13 +778,15 @@ recon/
 |------|----------|----------|---------|
 | `system_info` | system | uname, distro, uptime, load, RAM, CPU | — |
 | `systemd_units` | systemd | список юнитов со статусами (фильтр) | — |
-| `journal_tail` | systemd | journalctl по юниту/окну/лимиту | SUDO_JOURNALCTL |
+| `journal_tail` | systemd | journalctl: юнит / kernel ring (`-k`) / previous boot (`-b -1`) / окно (`--since`/`--until`) / `-p` / `-g`; полный вывод — в артефакт | SUDO_JOURNALCTL; CAP_SYSLOG для `-k` на хостах с `kernel.dmesg_restrict=1` |
 | `net_ifaces` | network | ip addr / ip link / ip route / ARP | — |
 | `net_listen` | network | ss -tulpn, распарсен в таблицу | SUDO_SS |
 | `net_connect` | network | TCP/ICMP-чек до списка эндпоинтов | — |
 | `dns_resolve` | network | резолв имён через системный resolver | — |
 | `process_list` | process | снапшот /proc, топ по cpu/ram | — |
-| `file_read` | files | чтение файла из whitelist, с hash | CAP_DAC_READ_SEARCH (опц.) |
+| `file_read` | files | чтение окна файла из whitelist (head / `offset` / `from_end` / `tail_lines`), full-file sha256 для head; окно — в searchable-артефакт, инлайн только метаданные | CAP_DAC_READ_SEARCH (опц.) |
+| `log_search` | files | grep RE2 по файлам whitelist **in-process на хосте** (path/path_glob, `since`/`until`, `from_end`); мегабайты не попадают в контекст; symlink-guard на каждый матч | CAP_DAC_READ_SEARCH (опц.) |
+| `dmesg` | system | kernel ring buffer с абсолютными ISO-таймстемпами (`--time-format=iso`); grep — in-process | CAP_SYSLOG (для `kernel.dmesg_restrict=1`) |
 | `disk_usage` | system | df, inodes, du по whitelist | — |
 
 **Вторая волна (после MVP):** `k8s_certs`, `k8s_kubelet`, `iptables_dump`, `crictl_ps`, `etcd_health`, `cert_expiry`, `env_vars`.
